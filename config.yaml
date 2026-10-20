@@ -1,12 +1,19 @@
 # ============================================================
 # QTrader 量化交易系统 - 主配置
-# A股投资准则 v2.0 参数化落地(每条规则有编号,参数是起点,改参数走 D1 流程)
-# 说明:所有金额单位为 CNY;时间为北京时间(Asia/Shanghai)
+# 《投资系统准则 v3》参数化落地(取代 A股准则 v2.2 / 美股准则 v1.3)
+#
+# 资金三层结构(持有与交易彻底分开):
+#   底层仓:只持有,不择时(美股75% / A股40%),每年1月再平衡(L3)
+#   交易层:通用引擎 E1-E7 按波动率σ自动缩放(美股15% / A股45%)
+#   大底储备:只在大熊市动用 Z1-Z4(美股10% / A股15%)
+#
+# 全部可调参数约十几个,改参数走 D1 流程(每月复盘、写下原因、7天后生效)。
+# 所有金额:A股为 CNY,美股为 USD;时间为北京时间(Asia/Shanghai)。
 # ============================================================
 
 app:
   name: qtrader
-  mode: live             # paper=纸面模拟撮合(准则"先跑3个月模拟盘") | live=实盘人工通道(信号->你在券商App下单->回填真实成交记账)
+  mode: live             # paper=纸面模拟撮合(V3:先跑3个月模拟盘) | live=实盘(券商API自动下单,缺密钥降级人工通道)
   initial_capital: 10000 # 对齐真实本金一万块
   state_dir: ./data      # 状态目录(SQLite/缓存/日志),迁移服务器时拷走这个目录即可
   log_level: INFO
@@ -15,15 +22,15 @@ app:
 market:
   a_share:
     enabled: true
-    exclude_st: true       # 红线:不买 ST/*ST(G10 自动检测触发清仓)
+    exclude_st: true       # F2:ST 触发硬失效,次日全部卖出
     exclude_bj: true       # 北交所(50万开户门槛,1万元实盘无权限,源头排除)
     exclude_star: true     # 科创板 688(50万门槛,无权限)
     include_chinext: false # 创业板 300(10万+2年经验门槛,默认关)
   hk:
     enabled: true
-    watch: ["00700", "09988", "03690", "01810"]   # 观察池(段永平系"老登股",只看不交易)
+    watch: ["00700", "09988", "03690", "01810"]   # 观察池(只看不交易)
   us:
-    enabled: true           # 美股板块(美股投资准则 v1.1,独立账户/美元计价)
+    enabled: true           # 美股板块(独立账户/美元计价)
 
 data:
   request_interval_sec: 0.35
@@ -33,216 +40,226 @@ data:
   val_cache_hours: 12       # 估值(PE/PB历史)缓存
 
 # ============================================================
-# 股票池(P1-P6):池子文件为 pool.yaml(人工确认后的生效池,含理由卡 P4)
-# `python main.py pool` 跑 P1 硬条件自动筛,产出 data/pool_candidates.csv
+# 股票池(U1-U4):池子文件 pool.yaml(生效池,kind 标注 老登股/科技股)
+# `python main.py pool` 跑 U2/U3 硬条件自动筛,产出 data/pool_candidates.csv
+# U4:每年 4月底/8月底/10月底 定期报告出齐后重筛;移出名单的持仓按 F2 卖出
 # ============================================================
 pool:
-  file: ./pool.yaml          # 生效池子(理由卡)
-  hard_filters:              # P1 硬条件(全部满足才进候选)
-    min_list_years: 3          # 上市满3年
+  file: ./pool.yaml
+  size: [15, 25]             # U4 池子规模 15~25 只
+  hard_filters:              # 通用硬条件(U2/U3 共同部分)
+    min_list_years: 3          # 上市满3年且不是ST
     min_market_cap: 3.0e11     # 总市值 >= 300亿
-    min_avg_amount_60d: 1.0e8  # 最近60日日均成交额 >= 1亿
-    min_roe_3y: 0.10           # 近3年每年 ROE >= 10%
-    min_ocf_ratio_3y: 0.80     # 近3年经营现金流净额合计 >= 净利润合计的80%
-    max_debt_ratio: 0.60       # 资产负债率 <= 60%(银行/保险/券商豁免)
-    max_goodwill_pct: 0.20     # 商誉 <= 净资产的20%
+    min_avg_amount_60d: 1.0e8  # 日均成交额 >= 1亿
     max_pledge_pct: 0.30       # 控股股东质押 <= 30%(数据拿不到时人工确认)
-    require_dividend_3y: true # 近3年每年现金分红
-    exempt_debt_industries: ["银行", "保险", "券商"]   # 高负债行业豁免负债率条款
-  size: [15, 25]             # P3 池子规模
-  min_industries: 5          # P3 至少覆盖5个行业
-  valuation:                 # P5 估值分位
-    window_years: 5            # 个股:近5年 PE-TTM 百分位
-    cyclic_industries: ["银行", "券商", "钢铁", "化工", "有色", "保险"]  # 周期行业用 PB 分位
-  refresh_months: [4, 8, 10] # P6 定期报告出齐后重筛(提醒人工)
-  earnings_gap_days: 3       # G5:财报/业绩预告公布前3个交易日不买(日历拿不到时仅日志提醒)
+  profiles:                   # U2/U3 分档案条件(行业白名单内才候选)
+    old:                      # U2 A股老登股(底层仓+交易层通用)
+      industries: [银行, 非银金融, 食品饮料, 公用事业, 交通运输, 石油石化, 煤炭, 家用电器]
+      min_roe_3y: 0.10           # 近3年每年 ROE >= 10%
+      require_dividend_3y: true  # 近3年每年现金分红
+      min_div_yield: 0.03        # 股息率 >= 3%
+      max_debt_ratio: 0.60       # 资产负债率 <= 60%(金融除外)
+      exempt_debt_industries: [银行, 非银金融]
+      max_goodwill_pct: 0.20
+    tech:                     # U3 A股科技股(仅交易层)
+      industries: [电子, 计算机, 通信, 传媒, 电力设备, 国防军工]
+      min_roe_3y: 0.08           # 近3年每年 ROE >= 8%,且没有亏损
+      no_loss_3y: true           # 近3年没有亏损
+      min_revenue_growth: 0.15   # 营收年均增长 >= 15%
+      min_rd_ratio: 0.05         # 研发投入 >= 营收的5%
+      min_ocf_ratio_3y: 0.80     # 经营现金流合计 >= 净利润合计的80%
+      max_debt_ratio: 0.60
+      max_goodwill_pct: 0.20
+  valuation:                 # 抄底估值条件(E3 A股):近5年 PE 分位;周期股用 PB
+    window_years: 5
+    cyclic_industries: [银行, 非银金融, 钢铁, 化工, 有色, 保险, 煤炭]  # 用 PB 分位
+  refresh_months: [4, 8, 10] # U4 定期报告出齐后重筛(提醒人工)
+  # F2 硬失效中"季度亏损/营收下滑/审计意见/立案调查"无稳定免费数据源:
+  # U4 重筛时人工核对财报,确认失效的把 pool.yaml 该条 hard_fail 置 true,系统次日全卖。
 
 # ============================================================
-# 资金结构:个股60% / ETF压舱20% / 现金20%
+# A股三层结构:底层仓 40% / 交易层 45% / 大底储备 15%
 # ============================================================
 allocation:
-  stocks_pct: 0.60
-  etf_pct: 0.20
-  cash_pct: 0.20
-  rebalance_drift: 0.05     # R1:每年1月第一个交易日,偏离>5个百分点才调回
-  cash_floor: 0.05          # R2:现金池低于5%时,卖出回款优先补足
+  base_pct: 0.40
+  trade_pct: 0.45
+  reserve_pct: 0.15
+  rebalance_drift: 0.05     # L3:每年1月首个交易日再平衡,偏离>5个百分点才调整
 
-# ============================================================
-# 策略(旧策略已默认停用,保留代码供对照;切换期旧持仓由 flatten_legacy 清退)
-# ============================================================
-strategy:
-  hot_momentum:              # [停用] 追热点与准则"不追题材"红线冲突
-    enabled: false
-    flatten_legacy: false
-    breakout_lookback: 20
-    vol_ratio_min: 1.8
-    day_change_min: 0.02
-    day_change_max: 0.07
-    close_range_pos_min: 0.80
-    take_profit: 0.08
-    pump_exit_pct: 0.07
-    trailing_arm: 0.05
-    hard_stop: 0.06
-    time_stop_days: 4
-    max_positions: 3
-  cautious_dip:              # [停用] 由 value_dip + etf_core 取代
-    enabled: false
-    flatten_legacy: true     # 存量旧持仓每天生成清仓信号直至清空,然后停用
-    lookback_high: 60
-    drawdown_trigger: 0.12
-    rsi_window: 14
-    rsi_oversold: 32
-    tranche_count: 3
-    tranche_step: 0.05
-    target_profit: .10
-    time_stop_days: 15
-    hard_stop: 0.10
-    max_positions: 3
+# ---- 底层仓(L1-L5):只持有,不止盈/不抄底/不追涨 ----
+base:
+  dividend_etf:              # L2 红利低波ETF 选一只
+    symbol: SH512890
+    target_pct: 0.20         # 20%
+  old_stocks:                # L2 老登股 3~5 只(U2 准入,来自 pool.yaml kind=old)
+    target_pct: 0.20         # 合计 20%,等权买入
+    min_count: 3
+    max_count: 5
+  # L4 唯一例外:老登股触发 F2 硬失效 -> 卖出,钱换入红利低波ETF
+  # L5 A股个股持有超1年股息免税 -> 底层老登股不频繁换股
 
-  # ---------------- 新准则主策略 ----------------
-  value_dip:                  # 个股档位抄底(G1-G12),只交易 pool.yaml 池内股票
+# ---- 交易层(通用引擎 E1-E7,A股市场参数) ----
+trade:
+  per_stock_cap: 0.05        # F1 单只上限 = 账户5%
+  industry_cap: 0.15         # F1 同行业上限 15%
+  max_holdings: 8            # 交易层持股数 5~8 只
+  min_holdings: 5            # 提醒下限(不强制)
+  sigma_window: 252          # E1 σ = 252日日收益率std × √252,每月最后交易日更新
+  high_window: 252           # E2 前高 = 252日最高收盘;只用收盘价
+  a1: 0.5                    # E3 抄底档位(σ倍数):a1/a2/a3
+  a2: 0.9
+  a3: 1.3
+  deep_cap: 0.60             # E3 a3·σ 最深不超过 60%
+  b: 0.6                     # E4 剩余1/3:从最高收盘回落 b·σ 卖出
+  c: 0.4                     # E5 追涨份:从买入后最高收盘回落 c·σ 卖出
+  sell_back_ratio: 0.667     # E4 涨回触发日前高 -> 卖这份的 2/3
+  buy_val_quantile_max: 0.50 # E3 抄底估值条件:分位 <= 50%(缺失=不可知=不买)
+  sell_val_quantile_min: 0.90 # 高估值清仓:分位 > 90% 卖出剩余全部
+  earnings_gap_days: 3       # 财报前不开新仓:3个交易日
+  chase:                     # E5 追涨(A股限制更多:追涨更弱、退出更快)
     enabled: true
-    high_window: 252          # G3 前高 = 最近252个交易日最高收盘价
-    tranches:                 # G3 加仓档位(每档触发买1份)
-      - {key: A, dd: -0.20}   # 涨回前高约赚25%
-      - {key: B, dd: -0.35}   # 涨回前高约赚54%
-      - {key: C, dd: -0.50}   # 涨回前高约赚100%
-    tranche_pct: 0.04         # G1 每份 = 净值4%
-    per_stock_cap: 0.12       # G1 单只额度上限12%(3份打满)
-    max_holdings: 8           # G1 同时持有最多8只
-    min_holdings: 5           # G1 目标下限(提醒,不强制)
-    industry_cap: 0.25         # G2 同一行业合计 <= 25%
-    stocks_cap: 0.60           # G2 个股合计 <= 60%
-    buy_val_quantile_max: 0.50 # G4 买入闸门:估值分位 <= 50%
-    sell_val_quantile_min: 0.90 # G8 高估值清仓:分位 > 90%
-    sell_back_ratio: 0.667     # G6 涨回前高卖出该份的2/3
-    trailing_fallback: 0.25    # G7 剩余1/3:从最高收盘回落25%才卖
-    deep_dd_review: 0.65       # G12 回撤>65%:停止加仓,标记强制复核
-    one_tranche_per_day: true  # 单只单日最多触发1个档位(跳空大跌不一天打满,分批纪律)
+    tech_only: true          # 只限科技股,老登股不追
+    cap_pct: 0.09            # 追涨资金上限 = 交易层45%的1/5
+    per_month_max: 1         # 每月最多1笔
+    time_stop_days: 15       # 买入后15个交易日没再创新高就卖
+    day_chg_max: 0.05        # 当天涨幅 >= 5% 不追
+    days5_chg_max: 0.15      # 近5日 >= 15% 不追
+    limit_premium_max: 0.02  # 次日限价不超过前收盘价的 102%
 
-  etf_core:                   # ETF压舱仓(E1-E4)
-    enabled: true
-    dividend_etf:             # E1 红利低波ETF:启动买入,长期持有
-      symbol: SH512890
-      target_pct: 0.10
-    broad_etf:                 # E2 宽基ETF:指数估值分位控制(每月最后交易日检查)
-      symbol: SH510300         # 沪深300ETF(或换中证A500: SH512050)
-      target_pct: 0.10
-      low_q: 0.30              # 指数PE近10年分位 < 30%:全持有10%
-      high_q: 0.70             # 30%-70%:持一半5%;> 70%:不持有
-    index_val_window_years: 10
-    monthly_check: true        # E2 每月最后交易日收盘后检查
+# ---- 大底储备(Z1-Z4) ----
+reserve:
+  total_pct: 0.15
+  park_symbol: SH511990      # Z4 平时放货币基金(华宝添益;不足一手时按现金停泊)
+  park_min_amount: 10000     # 停泊扫入门槛(场内货基一手约1万元,不足则留现金)
+  index_symbol: SH000300     # Z2 跟踪:沪深300指数(近3年最高收盘)
+  buy_symbol: SH510300       # Z2 买入:沪深300ETF(或中证A500 SH512050)
+  window_years: 3            # 近3年最高
+  thresholds: [-0.40, -0.50, -0.60]   # Z2 跌超 40/50/60% 各投1/3
+  sweep_buffer: 0.02         # 现金超过2%缓冲即扫入停泊(够一手时)
 
 # ============================================================
-# 风控底线(系统级安全网,与准则叠加;准则本身不设止损,回撤靠档位与分散)
+# 风控:v3 用仓位大小代替止损;单只5%愿赌服输。
+# 交易层个股上限/行业上限在策略层执行;这里只留系统级安全网。
+# 账户级清仓熔断与单日亏损冷却与"大跌恰是买点"冲突 -> 默认禁用(0)。
 # ============================================================
 risk:
-  max_position_pct: 0.12        # 对齐 G1 单只12%(旧值0.30已废)
-  max_total_exposure: 0.80      # 个股60% + ETF20%
-  regime_enabled: false         # 趋势降仓关闭:逆向分档买入体系,大盘走弱恰是机会
-  daily_loss_limit_pct: -0.03   # 单日亏3%:冷却(保留)
+  max_position_pct: 0.25        # 安全网:底层红利ETF 20% 合法通过;交易层5%由策略层管
+  max_total_exposure: 1.05      # 三层结构允许满仓资产(现金只是过渡)
+  regime_enabled: false
+  daily_loss_limit_pct: 0       # 0 = 禁用(v3 无单日冷却条款,抄底日往往就是大跌日)
   cooldown_days: 2
-  max_drawdown_kill: -0.15      # 账户回撤15%:熔断清仓人工复位(保留,最后的安全网)
+  max_drawdown_kill: 0          # 0 = 禁用账户级熔断;F3 交易层-25%停开仓由策略层执行
+  trade_halt_dd: -0.25          # F3:交易层从最高点亏超25% -> 停新开仓1个月
+  trade_halt_days: 30
 
 broker:
   paper:
     commission_rate: 0.00025
     commission_min: 5.0
-    stamp_tax: 0.0005           # 印花税卖出收(2023-08减半后);ETF免
+    stamp_tax: 0.0005           # 卖出印花税0.05%(ETF不收);A股主要成本
     transfer_fee: 0.00001
     slippage: 0.001
     limit_up_pct: 0.098         # X4:开盘涨幅>=9.8%视为涨停,买入顺延
-    limit_down_pct: -0.098      # X3:开盘跌幅<=-9.8%视为跌停,卖单挂起次日再试
+    limit_down_pct: -0.098      # X3/F4:跌停卖单逐日挂,直到成交
   api:                           # A股券商API直连(QMT/miniQMT 接口位,未实现)
     enabled: false               # 接入:Windows+券商开通miniQMT+pip install xtquant,
-    provider: qmt                # 在 engine.py live 分支返回 QmtBroker 即可,撮合分支零改动
+    provider: qmt                 # X3:程序自动下单属程序化交易,首次使用前先向券商报告
                                  # enabled=false 时 live 模式走人工通道
 
 # ============================================================
-# 调度(X1:收盘后算信号,次日开盘撮合;盘中不再产生交易决策)
+# 调度(X1:收盘后算信号,次日开盘撮合;盘中只记净值不决策)
 # ============================================================
 schedule:
   tick_seconds: 30
-  signal_time: "15:10"         # 收盘后:算信号写入 pending(档位/估值/风控事件)
-  execute_time: "09:25"        # 次日开盘:按开盘价撮合昨日信号(X3/X4涨跌停处理)
-  eod_time: "15:35"            # 盘后:净值结算/熔断检查/快照导出
-  mark_times: ["10:30", "14:00"]  # 盘中仅记录净值曲线,不产生信号
-  rebalance_month: 1           # R1:每年1月第一个交易日再平衡
+  signal_time: "15:10"
+  execute_time: "09:25"
+  eod_time: "15:35"
+  mark_times: ["10:30", "14:00"]
+  rebalance_month: 1           # L3:每年1月第一个交易日再平衡
+  stale_signal_days: 5
 
 server:
   host: 0.0.0.0
   port: 8000
-  password: "y318760nj"      # 看板登录密码(美股准则:系统只算信号/发提醒/记日志,下单人工确认)
+  password: "y318760nj"      # 看板登录密码(系统只算信号/发提醒/记日志,下单人工确认)
 
 # ============================================================
-# 美股板块(美股投资准则 v1.1)——独立账户/美元计价/与A股账户分开管理
+# 美股板块(准则 v3)——独立账户/美元计价,与A股分开管理
+# 三层:底层仓 75%(纳指100 40% + 标普500 35%) / 交易层 15% / 储备 10%
 # 调度为北京时间:美股收盘约 04:00-05:00(北京) -> 06:10 算信号;
-# 美股开盘约 21:30-22:30(北京) -> 22:40 开盘价撮合(X1 美股版)
+# 美股开盘约 21:30-22:30(北京) -> 22:40 开盘撮合
 # ============================================================
 us:
   enabled: true
-  state_dir: ./data_us        # 美股独立状态目录(与A股 ./data 完全分开,迁移拷走即可)
-  mode: live                  # paper=纸面自动撮合 | live=实盘人工通道(信号->你在券商App下单->回填真实成交记账)
-  initial_capital: 10000      # USD(美元本金,改这里)
-  core:                        # 核心仓 C1-C9(纳指100 ETF)
-    symbol: USQQQM            # QQQM 或 QQQ 二选一,不来回换
-    total_pct: 0.70           # 占美股总资金 70%
-    parts: 5                  # 核心仓分 5 份
-    base_parts: 2             # C4 底仓 = 2/5 = 28%(长期持有,R1 才调整)
-    high_window: 252          # C2 前高 = 最近252个交易日最高收盘价
-    tranches:                 # C5 加仓档位(各 1 份 = 14%)
-      - {key: A, dd: -0.10}   # 涨回前高约赚 11%
-      - {key: B, dd: -0.20}   # 约 25%
-      - {key: C, dd: -0.30}   # 约 43%
-  satellite:                   # 卫星仓 S1-S13(个股,最多3只)
-    pool_file: ./us_pool.yaml # 理由卡必填(S7),人工维护
-    total_pct: 0.20           # R4 卫星仓合计 <= 20%
-    max_stocks: 3
-    high_window: 252          # S6 前高 = 252个交易日最高收盘
-    tranches:                 # S6 档位(个股波动大,比核心仓拉得宽)
-      - {key: A, dd: -0.15}   # 涨回前高约赚 18%
-      - {key: B, dd: -0.30}   # 约 43%
-      - {key: C, dd: -0.45}   # 约 82%
-    per_stock_pct: 0.10       # R2 单只上限 10%(每份 = 10%/3)
-    trim_trigger: 0.15        # R2 涨超 15% -> 减回 10%
-    industry_cap: 0.15        # R3 同行业合计 <= 15%
-    max_dd_5y: 0.70           # S5 过去5年最大回撤 <= 70%
-    earnings_gap_days: 3      # S7 财报公布前3个交易日不买(读 next_earnings 字段)
-    sell_back_ratio: 0.667    # S9 涨回前高卖出该份的 2/3
-    trailing_normal: 0.25     # S10 移动止盈:普通股回落 25%
-    trailing_high: 0.30       # S10 高波动个股回落 30%(vol_class: high)
-    deep_dd_review: 0.60     # S13 回撤超 60%:停止加仓,强制复核
-  cash:                        # 现金池 + 停泊仓 C9/R5
-    symbol: USSGOV            # 短期国债ETF(SGOV/BIL):闲置份额与现金池都停泊于此
+  state_dir: ./data_us
+  mode: live                  # paper=纸面自动撮合 | live=实盘(Alpaca自动下单/人工通道兜底)
+  initial_capital: 10000      # USD
+  allocation:
+    base_pct: 0.75
+    trade_pct: 0.15
+    reserve_pct: 0.10
+  base:                        # L1 底层仓:分3个月每月等额买完,之后不择时
+    months: 3
+    etfs:
+      - {symbol: USQQQM, target_pct: 0.40}   # 纳指100(QQQM 或 QQQ 二选一,不来回换)
+      - {symbol: USVOO,  target_pct: 0.35}   # 标普500(VOO/IVV/SPYM 三选一)
+  trade:                       # 交易层(通用引擎 E1-E7,美股市场参数)
+    pool_file: ./us_pool.yaml  # U1 科技股准入名单(人工维护,含一句话U5)
+    per_stock_cap: 0.05        # F1 单只 = 账户5%
+    industry_cap: 0.10         # F1 同行业 10%
+    max_holdings: 3            # 持股 3 只左右
+    sigma_window: 252
+    high_window: 252
+    a1: 0.5
+    a2: 0.9
+    a3: 1.3
+    deep_cap: 0.60
+    b: 0.6
+    c: 0.4
+    sell_back_ratio: 0.667
+    max_dd_5y: 0.70            # U1 过去5年最大回撤 <= 70%(系统按日线自动复核)
+    earnings_gap_days: 5       # 财报前不开新仓:5个交易日
+    chase:                      # E5 追涨:交易层全部科技股
+      enabled: true
+      tech_only: false          # 美股池全是科技股,无限制
+      cap_pct: 0.05             # 追涨资金上限 = 交易层15%的1/3
+      per_month_max: 2          # 每月最多2笔
+      time_stop_days: 0         # 不设时间止损
+      day_chg_max: 0.0          # 不设当日涨幅过滤(0=禁用)
+      days5_chg_max: 0.0        # 不设5日过滤(0=禁用)
+      limit_premium_max: 0.0    # 不设限价约束(0=禁用)
+  reserve:                     # Z1 大底储备:纳指100从历史最高收盘跌超 35/45/55%
     total_pct: 0.10
-    cash_floor: 0.05          # R5 现金池低于 5% -> 卖出回款优先补足
-    sweep_buffer: 0.02        # 现金缓冲:超过 2% 的现金自动扫入 SGOV 计息
+    park_symbol: USSGOV        # Z4 平时放短期美债ETF
+    track_symbol: USQQQ        # 历史最高收盘跟踪(用QQQ长历史代表纳指100)
+    buy_symbol: USQQQM         # 触发后买入纳指100ETF(与底层仓同标的)
+    thresholds: [-0.35, -0.45, -0.55]
+    window_years: 0            # 0 = 历史最高(美股);A股用近3年
+    sweep_buffer: 0.02
   schedule:
     tick_seconds: 30
-    signal_time: "06:10"      # 北京时间,美股收盘后算信号(C1 只用收盘价)
-    execute_time: "22:40"     # 北京时间,美股开盘后按开盘价撮合(冬令时开盘22:30)
-    stale_signal_days: 5      # 信号挂起超过5个交易日作废重评
+    signal_time: "06:10"
+    execute_time: "22:40"
+    stale_signal_days: 5
   broker:                     # 费用模型(美元)
-    commission_rate: 0.0001    # 交易荟 0.01%
-    commission_min: 18.0      # 标准佣金每单最低 18 美元(首1000股)
-    slippage: 0.001           # 滑点对我不利方向,不自己骗自己
-    api:                       # 券商API直连下单(live 模式自动下单通道)
+    commission_rate: 0.0001    # 交易荟 0.01%(低至)
+    commission_min: 18.0      # 汇丰标准佣金每单 18 美元
+    slippage: 0.001
+    api:                       # 券商API直连(Alpaca REST)
       enabled: true
-      provider: alpaca         # 当前实现 Alpaca(REST);富途/长桥/IBKR 接口位已留
-      # 先用 paper key 联调(免费): https://app.alpaca.markets/signup 开Paper账户
-      # 通过准则"3个月模拟盘"后再换真实key
+      provider: alpaca
       base_url: https://paper-api.alpaca.markets   # 真钱改 https://api.alpaca.markets
       key_id: ""               # 留空则读环境变量 ALPACA_KEY_ID
       secret: ""               # 留空则读环境变量 ALPACA_SECRET
-      timeout_sec: 30          # 市价单回报超时(超时不补单,人工核实)
+      timeout_sec: 30          # 回报超时绝不自动补单,人工核实
       poll_seconds: 1
-      zero_commission: true    # Alpaca 美股零佣金;券商收费则改 false 按回报计费
-  risk:                        # 准则的仓位上限在策略层(C5/R2/R3/R4);这里只留最终安全网
-    max_position_pct: 1.0     # 不启用单票上限(QQQM 底仓合法占比 28%)
-    max_total_exposure: 1.05  # 不启用总仓位上限(现金停泊 SGOV 后总市值可达 ~98%)
-    max_drawdown_kill: 0      # 0 = 禁用熔断(C5 要求大跌加仓,与熔断语义冲突)
-    daily_loss_limit_pct: 0   # 0 = 禁用单日冷却(纳指单日 -3% 常见,不能禁买)
-  rebalance_drift: 0.05       # R1 偏离超过5个百分点才调回
+      zero_commission: true    # Alpaca 零佣金;券商收费则改 false
+  risk:
+    max_position_pct: 1.0     # 不启用单票上限(QQQM 底层仓合法 40%)
+    max_total_exposure: 1.05
+    max_drawdown_kill: 0      # 禁用(Z1 大跌恰是买点)
+    daily_loss_limit_pct: 0   # 禁用
+  rebalance_drift: 0.05       # L3 偏离超5个百分点才调
 
 backtest:
   start: "2024-06-01"
