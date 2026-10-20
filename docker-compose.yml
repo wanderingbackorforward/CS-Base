@@ -1,0 +1,17 @@
+services:
+  qtrader:
+    build: .
+    container_name: qtrader
+    restart: unless-stopped   # 宿主机重启/容器崩溃都会自动拉起,状态不丢
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      - "8000:8000"           # 看板地址 http://<服务器IP>:8000 (建议只绑本机+ssh隧道,或套 nginx 加密码)
+    volumes:
+      - ./data:/app/data       # 唯一的状态目录:迁移/备份/搬家 = 拷这个目录
+
+# 常用操作:
+#   docker compose up -d --build   # 首次构建并启动
+#   docker compose logs -f        # 看日志
+#   docker compose down           # 停止(状态保留在 ./data)
+#   docker compose down -v        # 危险!会删命名卷(我们用的是 bind mount,down 不删 ./data,别手贱 rm -rf 就行)

@@ -1,0 +1,10 @@
+# 运行时依赖(Python >= 3.10;建议 3.11/3.12,本仓库在 3.14 上亦验证通过)
+akshare>=1.14.0
+pandas>=2.0
+numpy>=1.26
+PyYAML>=6.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+requests>=2.31
+# 开发/测试
+pytest>=8.0

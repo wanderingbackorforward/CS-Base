@@ -1,0 +1,14 @@
+# 环境与缓存
+.venv/
+__pycache__/
+*.pyc
+
+# 运行状态(全部在这里:迁移=拷走这个目录;备份脚本会打包它)
+data/
+
+# 回测产物
+data/backtest/
+
+# 系统
+.DS_Store
+*.log

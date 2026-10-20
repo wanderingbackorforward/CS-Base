@@ -1,0 +1,117 @@
+# ============================================================
+# QTrader 量化交易系统 - 主配置
+# 说明:所有金额单位为 CNY;时间为北京时间(Asia/Shanghai)
+# ============================================================
+
+app:
+  name: qtrader
+  mode: paper            # paper=纸面模拟撮合(默认) | live=实盘(需券商适配器,当前预留)
+  initial_capital: 10000 # 对齐真实本金一万块,纸面感受真实的最低佣金摩擦
+  state_dir: ./data      # 状态目录(SQLite/缓存/日志),迁移服务器时拷走这个目录即可
+  log_level: INFO
+  timezone: Asia/Shanghai
+
+market:
+  a_share:
+    enabled: true
+    exclude_st: true       # 剔除 ST/*ST
+    exclude_bj: true       # 剔除北交所(8xx/4xx/92x)
+    exclude_star: true     # 剔除科创板 688(实盘需 50 万门槛,够不着)
+    include_chinext: false # 创业板 300(实盘需 10 万+2年经验;默认关,自行开启)
+    min_price: 3.0
+    max_price: 150.0
+    min_amount: 1.0e8      # 日成交额下限 1 亿(流动性闸门)
+  hk:
+    enabled: true
+    watch: ["00700", "09988", "03690", "01810"]   # 腾讯/阿里/美团/小米(段永平系"老登股"观察池)
+  us:
+    enabled: false          # 预留:境内程序化美股需 IBKR/老虎等通道,先关闭
+
+data:
+  source_priority: auto    # auto: 东财优先,失败自动切换新浪/腾讯兜底
+  request_interval_sec: 0.35 # 打底限速,防止被数据商封
+  cache_dir: ./data/cache
+  spot_cache_seconds: 120   # 实时快照缓存
+  hist_cache_hours: 12       # 日K缓存
+
+universe:
+  # 抄底策略标的池:大盘 ETF + 老登股(段永平风格观察池)
+  dip_targets:
+    - {symbol: SH510300, name: 沪深300ETF}
+    - {symbol: SH510500, name: 中证500ETF}
+    - {symbol: SH512880, name: 证券ETF}
+    - {symbol: SH513180, name: 恒生科技ETF}
+    - {symbol: SH600519, name: 贵州茅台}
+    - {symbol: SZ000858, name: 五粮液}
+    - {symbol: SH601318, name: 中国平安}
+    - {symbol: HK00700, name: 腾讯控股}
+
+heat:
+  top_n: 6                      # 取热度前 N 的概念板块作为候选股票池来源
+  min_board_amount: 2.0e9       # 板块成交额下限 20 亿(过滤僵尸概念)
+  watch_keywords:               # 你点名关注的方向:幻方(AI/算力/DeepSeek)、孙宇晨(稳定币/数字货币)
+    ["AI", "算力", "DeepSeek", "人工智能", "机器人", "稳定币", "数字货币", "半导体", "CPO", "液冷", "固态电池"]
+  show_top_stocks: 8            # 热度报告中每个板块展示的成分股数量
+
+strategy:
+  hot_momentum:                  # 策略一:追热点快跑(尾盘打板/强势突破,大涨必跑)
+    enabled: true
+    breakout_lookback: 20        # 突破 N 日新高
+    vol_ratio_min: 1.8          # 放量倍数(当日量 / 5日均量)
+    day_change_min: 0.02        # 当日涨幅下限 2%
+    day_change_max: 0.07        # 当日涨幅上限 7%(不追涨停,不追 20cm 一日情)
+    close_range_pos_min: 0.80   # 收盘价位于当日振幅的前 80%(强承接)
+    take_profit: 0.08           # 死线一:浮盈 >=8% 次日/当日必跑
+    pump_exit_pct: 0.07         # 死线二:昨日大涨 >=7%(含涨停)今日无条件跑路
+    trailing_arm: 0.05         # 浮盈触及 5% 后,止损线上移到保本+1%
+    hard_stop: 0.06            # 硬止损 -6%(T+1 决定买入当天跑不了,只能吃隔夜风险)
+    time_stop_days: 4          # 持有 N 天不创新高就撤(资金效率)
+    max_positions: 3
+  cautious_dip:                  # 策略二:谨慎抄底(ETF/老登股分批接飞刀)
+    enabled: true
+    lookback_high: 60          # 回撤锚点:N 日最高
+    drawdown_trigger: 0.12      # 自高点回撤 >=12% 才进入观察
+    rsi_window: 14
+    rsi_oversold: 32
+    tranche_count: 3            # 最多分 3 批
+    tranche_step: 0.05          # 每再跌 5% 补一批
+    target_profit: .10         # 目标 +10% 或收回 MA20 清仓
+    time_stop_days: 15
+    hard_stop: 0.10             # 均价 -10% 认错离场(宽止损,抄底策略特性)
+    max_positions: 3
+
+risk:
+  max_position_pct: 0.30        # 单票最大仓位占比
+  max_total_exposure: 0.85      # 总仓位上限(趋势正常时)
+  regime_index: SH510300        # 用沪深300ETF 作为大盘风向标
+  regime_ma: 20                 # 收在 MA20 之上:允许满配;之下:仓位上限减半
+  regime_low_exposure: 0.40
+  daily_loss_limit_pct: -0.03   # 单日亏 3%:强制冷却,停新开仓
+  cooldown_days: 2
+  max_drawdown_kill: -0.15      # 自净值峰值回撤 15%:一键清仓熔断,人工复位才继续
+
+broker:
+  paper:
+    commission_rate: 0.00025    # 佣金万 2.5
+    commission_min: 5.0          # 最低 5 元(小资金最痛的一项,如实模拟)
+    stamp_tax: 0.0005           # 印花税,卖出收(2023-08 减半后)
+    transfer_fee: 0.00001      # 过户费,双边
+    slippage: 0.001             # 滑点 0.1%
+
+schedule:
+  tick_seconds: 30
+  decision_time: "14:40"        # 尾盘决策(规避 T+1 当日无法卖出的敞口)
+  eod_time: "15:10"
+  morning_promote: "09:20"     # T+1 可卖数量就绪
+  mark_times: ["09:35", "10:30", "11:30", "13:30", "14:40", "15:05"] # 盘中盯市时点
+
+server:
+  host: 0.0.0.0
+  port: 8000
+
+backtest:
+  start: "2024-06-01"
+  end: "2026-10-01"
+  universe_size: 80            # 回测股票池大小(按近期成交额取头部,存在幸存者偏差,详见 backtest.py 注释)
+  heat_mode: proxy            # proxy=用个股动量近似板块热度(快) | boards=用东财概念板块历史(慢而准)
+  boards_top_n: 30
