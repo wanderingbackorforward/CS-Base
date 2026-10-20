@@ -1,8 +1,8 @@
 {
-  "exported_at": "2026-10-20 10:18:03",
+  "exported_at": "2026-10-20 10:39:41",
   "account": {
-    "cash": -2464.8500000000004,
-    "day_start_equity": 10000.0,
+    "cash": 2535.1499999999996,
+    "day_start_equity": 9954.4,
     "peak_equity": 10000.0,
     "killed": false
   },
@@ -67,10 +67,10 @@
       "qty": 0,
       "ts": "2026-10-20 18:17:44",
       "strategy": "us_satellite",
-      "reason": "S6-A | S6-A档:自252日前高649.42回撤-17.1%(触发线-15%),理由卡成立,买1份(3.3%) | S20261019-USAMD-BUY-S6-A",
+      "reason": "S6-A | S6-A档:自252日前高649.42回撤-17.1%(触发线-15%),理由卡成立,买1份(3.3%) | S20261019-USAMD-BUY-S6-A | 人工放弃(未在券商App下单)",
       "size_hint_pct": 0.0,
       "order_id": "O2610201017441",
-      "status": "PENDING",
+      "status": "REJECTED",
       "filled_price": 0.0,
       "filled_qty": 0,
       "fee": 0.0
@@ -128,11 +128,11 @@
       "tranche": "A",
       "trigger_high": 649.42,
       "signal_id": "S20261019-USAMD-BUY-S6-A",
-      "status": "PENDING",
+      "status": "CANCELLED",
       "executed_date": "",
       "filled_price": 0.0,
       "filled_qty": 0,
-      "note": ""
+      "note": "验证闭环:单份预算不足1股"
     }
   ]
 }

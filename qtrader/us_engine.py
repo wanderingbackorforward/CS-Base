@@ -49,8 +49,10 @@ class UsEngine:
         self.store = Store(self.state_dir)
 
         # 组件专用子配置:broker/risk 用美股参数,数据缓存落在美股目录
+        us_broker_cfg = dict(us.get("broker", {}))
         comp_cfg = Section({
-            "broker": {"paper": dict(us.get("broker", {}))},
+            "broker": {"paper": us_broker_cfg,
+                       "api": us_broker_cfg.get("api", {}) or {}},
             "risk": dict(us.get("risk", {})),
             "data": {
                 "request_interval_sec": cfg["data"].get("request_interval_sec", 0.35),
@@ -62,6 +64,23 @@ class UsEngine:
         })
         self.feed = DataFeed(comp_cfg, self.state_dir)
         self.broker = PaperBroker(comp_cfg, self.store)
+        # live 模式优先券商API直连(Alpaca 等自动下单);
+        # 未配置密钥则降级人工通道(信号->券商App下单->fill 回填记账)
+        self.live_api = False
+        api_enabled = bool(us_broker_cfg.get("api", {})
+                           .get("enabled", False))
+        if api_enabled:
+            from .broker import ApiBroker
+            api_broker = ApiBroker(comp_cfg, self.store)
+            if api_broker.configured():
+                self.api_broker = api_broker
+                self.live_api = True
+                log.info("美股券商API通道就绪: %s %s",
+                         api_broker.provider, api_broker.base_url)
+            else:
+                log.warning("us.broker.api.enabled=true 但密钥未配置"
+                            "(key_id/secret 或环境变量 ALPACA_KEY_ID/ALPACA_SECRET),"
+                            "无法自动下单")
         self.risk = RiskManager(comp_cfg, self.store)
         self.strategies = build_us_strategies(cfg, self.store)
         self._us_core = next((s for s in self.strategies
@@ -288,9 +307,14 @@ class UsEngine:
         if not signals:
             return
         t0 = self.now()
-        if self.mode == "live":
-            # 实盘模式:系统不下单——信号转人工订单发提醒,你在券商App
-            # 下单成交后回填(fill 命令/看板),系统按真实资金流记账。
+        if self.mode == "live" and self.live_api:
+            # 实盘+券商API:真正的自动下单——撮合分支里 PaperBroker 换 ApiBroker,
+            # 市价单直连券商,成交价/数量以券商回报为准。
+            self.broker = self.api_broker
+            log.info("========== 美股开盘执行(券商API自动下单,北京 %s):"
+                     "%d 条 ==========", t0.date(), len(signals))
+        elif self.mode == "live":
+            # 实盘无API密钥:降级人工通道(信号->你在券商App下单->回填记账)
             from .fill import submit_manual
             positions = self.store.all_positions()
             quote = self._quotes_for(list({s.symbol for s in signals})
@@ -353,6 +377,17 @@ class UsEngine:
             log.info("美股信号作废 %s %s", sig.rule, sig.symbol)
             return
 
+        def _timeout(order: Order) -> None:
+            # 券商单已提交但回报超时:不猜成交与否、绝不自动补单;
+            # 信号关闭并注明券商单号,人工核实后 fill 补记 / skip 释放档位
+            sig.status = "CANCELLED"
+            sig.note = (f"券商单回报超时,勿重复下单!到券商App核实:"
+                        f"已成交则 fill {sig.signal_id} 补记,未成交则跳过")
+            sig.executed_date = today.isoformat()
+            self.store.save_signal(sig)
+            log.warning("券商单超时,信号转人工核实 %s %s(%s)",
+                        sig.rule, sig.symbol, order.reason)
+
         row = qrow.get(sig.symbol)
         if row is None:
             sig.note = "开盘报价缺失,保留次日重试"
@@ -382,6 +417,8 @@ class UsEngine:
                 self._sync_t0(positions, sig.symbol)
                 _finish("EXECUTED", f"开盘价{price:.2f}成交{o.filled_qty}股",
                         ok=True, filled_qty=o.filled_qty)
+            elif o.status.value == "PENDING":
+                _timeout(o)
             else:
                 _finish("FAILED", f"拒单:{o.reason}", ok=False)
             return
@@ -409,6 +446,8 @@ class UsEngine:
             self._sync_t0(positions, sig.symbol)
             _finish("EXECUTED", f"开盘价{price:.2f}成交{o.filled_qty}股",
                     ok=True, filled_qty=o.filled_qty)
+        elif o.status.value == "PENDING":
+            _timeout(o)
         else:
             _finish("FAILED", f"拒单:{o.reason}", ok=False)
 

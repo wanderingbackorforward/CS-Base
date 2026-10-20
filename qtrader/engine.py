@@ -71,10 +71,15 @@ class Engine:
         self.limit_down_pct = float(b.get("limit_down_pct", -0.098))
 
         self.capital = float(cfg["app"].get("initial_capital", 10000))
-        # paper=纸面自动撮合(模拟盘) / live=实盘人工通道(下单接口,成交回填记账)
+        # paper=纸面自动撮合(模拟盘) / live=实盘(券商API自动下单,缺密钥降级人工通道)
         self.mode = str(cfg["app"].get("mode", "paper")).lower()
         if self.mode not in ("paper", "live"):
             self.mode = "paper"
+        # A股券商API(QMT/miniQMT)接入位:
+        # Windows + 券商开通 miniQMT + pip install xtquant 后,在此构造
+        # QmtBroker 替换 PaperBroker 并置 live_api=True,撮合分支零改动。
+        # 未接入时 live 模式走人工通道(信号->你在券商App下单->fill 回填记账)。
+        self.live_api = False
         acc = self.store.load_account()
         if acc is None:
             acc = Account(cash=self.capital, day_start_equity=self.capital,
@@ -434,6 +439,17 @@ class Engine:
             log.info("信号作废 %s %s(%s)", sig.rule, sig.symbol, sig.signal_id)
             return
 
+        def _timeout(order) -> None:
+            # 券商单已提交但回报超时:不猜成交与否、绝不自动补单;
+            # 信号关闭并注明券商单号,人工核实后 fill 补记 / skip 释放档位
+            sig.status = "CANCELLED"
+            sig.note = (f"券商单回报超时,勿重复下单!到券商App核实:"
+                        f"已成交则 fill {sig.signal_id} 补记,未成交则跳过")
+            sig.executed_date = today.isoformat()
+            self.store.save_signal(sig)
+            log.warning("券商单超时,信号转人工核实 %s %s(%s)",
+                        sig.rule, sig.symbol, order.reason)
+
         row = qrow.get(sig.symbol)
         if row is None:
             sig.note = "开盘报价缺失,保留明日重试"
@@ -475,6 +491,8 @@ class Engine:
             if o.status.value == "FILLED":
                 _finish("EXECUTED", f"开盘价{price:.2f}成交{o.filled_qty}股",
                         ok=True, filled_qty=o.filled_qty)
+            elif o.status.value == "PENDING":
+                _timeout(o)
             else:
                 _finish("FAILED", f"拒单:{o.reason}", ok=False)
             return
@@ -525,6 +543,8 @@ class Engine:
         if o.status.value == "FILLED":
             _finish("EXECUTED", f"开盘价{price:.2f}成交{o.filled_qty}股",
                     ok=True, filled_qty=o.filled_qty)
+        elif o.status.value == "PENDING":
+            _timeout(o)
         else:
             _finish("FAILED", f"拒单:{o.reason}", ok=False)
 

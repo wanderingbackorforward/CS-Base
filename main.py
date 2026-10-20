@@ -12,7 +12,8 @@
   python main.py reset      # A股:人工复位熔断/冷却
   python main.py us-reset   # 美股:人工复位
 
-live 实盘人工通道(下单在券商App,系统记账):
+live 实盘(券商API自动下单 / 人工通道记账):
+  python main.py api-check  # 券商API连通性检查(美股Alpaca/A股QMT)
   python main.py pending    # 双账户列出待人工执行信号
   python main.py fill <signal_id> --price 296.3 --qty 9 --fee 18 [--mood 3]
   python main.py skip <signal_id> --note 理由
@@ -27,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-from qtrader.config import load_config
+from qtrader.config import Section, load_config
 from qtrader.engine import Engine
 from qtrader.us_engine import UsEngine
 
@@ -123,6 +124,40 @@ def cmd_us_status(us: UsEngine) -> None:
                           f"数量{tr.get('qty', 0)}")
 
 
+def cmd_api_check(cfg, us_engine) -> None:
+    """券商API连通性检查:配置是否就绪、账户是否可读。"""
+    print("== 券商API下单通道检查 ==")
+    api_cfg = dict(cfg["us"].get("broker", {}) or {}).get("api", {}) or {}
+    if not api_cfg.get("enabled", False):
+        print("美股券商API: 未启用(config us.broker.api.enabled=false)")
+    else:
+        from qtrader.broker import ApiBroker, ApiBrokerError
+        b = ApiBroker(Section({
+            "broker": {"api": dict(api_cfg)}
+        }), us_engine.store if us_engine else None)
+        if not b.configured():
+            print("美股券商API(alpaca): 密钥未配置——"
+                  "config us.broker.api.key_id/secret 或环境变量 "
+                  "ALPACA_KEY_ID/ALPACA_SECRET")
+            print("  申请(免费paper): https://app.alpaca.markets/signup "
+                  "-> 生成 Paper Only key")
+        else:
+            try:
+                info = b.account_info()
+                print(f"美股券商API(alpaca {b.base_url}): 连接成功")
+                print(f"  账户状态 {info['status']} {info['currency']} | "
+                      f"cash {info['cash']:.2f} | equity {info['equity']:.2f} | "
+                      f"buying_power {info['buying_power']:.2f}")
+            except Exception as e:  # noqa: BLE001
+                print(f"美股券商API(alpaca {b.base_url}): 连接失败 {e}")
+    cn_api = dict(cfg["broker"].get("api", {}) or {})
+    if cn_api.get("enabled", False):
+        print("A股券商API(qmt): 配置已启用但适配器未实现"
+              "(需 Windows+miniQMT+xtquant,见 config.yaml broker.api 注释)")
+    else:
+        print("A股券商API(qmt): 未启用(当前 live 模式走人工通道)")
+
+
 def cmd_manual(engine, us_engine, args) -> None:
     """live 人工通道:pending / fill / skip / cash。"""
     from qtrader import fill as F
@@ -197,7 +232,8 @@ def main() -> None:
                                             "reset", "pool",
                                             "us-once", "us-exec", "us-status",
                                             "us-reset",
-                                            "pending", "fill", "skip", "cash"])
+                                            "pending", "fill", "skip", "cash",
+                                            "api-check"])
     parser.add_argument("signal_id", nargs="?", default=None,
                         help="fill/skip 用:信号ID(pending 可查,支持唯一前缀)")
     parser.add_argument("--price", type=float, default=None,
@@ -221,6 +257,10 @@ def main() -> None:
     cfg = load_config(args.config)
     state_dir = Path(cfg["app"].get("state_dir", "./data"))
     setup_logging(state_dir, cfg["app"].get("log_level", "INFO"))
+
+    if args.command == "api-check":
+        cmd_api_check(cfg, None)
+        return
 
     if args.command == "pool":
         cmd_pool(cfg)

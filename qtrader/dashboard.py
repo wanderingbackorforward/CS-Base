@@ -198,8 +198,9 @@ background:#0d141c;color:var(--fg);font-size:14px;outline:none;letter-spacing:0}
 <div class="mrow"><button id="modal-ok">确定</button>
 <button id="modal-cancel" style="background:#1d2a3a">取消</button></div>
 </div></div>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"
+<script async src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"
  onerror="window.__noecharts=1"></script>
+<!-- async:CDN 慢/挂起时不阻塞看板主脚本(缺图表时自动降级表格,30s后重试) -->
 <script>
 const $=id=>document.getElementById(id);
 let TOKEN=localStorage.getItem('qt_token')||'';
@@ -292,6 +293,7 @@ function switchTab(m){mkt=m;
  $('view-us').style.display=m==='us'?'':'none';
  const c=charts[m];if(c)c.resize();}
 function drawEquity(m,pts){
+ pts=Array.isArray(pts)?pts:[];      // 防御:数据异常不拖垮整个看板渲染
  const el=$('chart-'+m);
  if(window.__noecharts||typeof echarts==='undefined'){el.innerHTML=
   '<div class="empty">图表库(CDN)不可达,仅表格模式。共 '+pts.length+' 个净值点</div>';return}
@@ -308,9 +310,11 @@ function drawEquity(m,pts){
    areaStyle:{color:'rgba(79,156,249,.12)'}}]});
 }
 function renderSignals(s,m,cur){
- const live=MODE[m]==='live';
+ const live=MODE[m]!==undefined&&MODE[m].startsWith('live');
+ const api=MODE[m]==='live-api';
+ const manual=MODE[m]==='live-manual';
  const sg=(s.signals||[]).map(g=>{
-  const ops=live?('<button class="mini" onclick="openFill(\''+g.signal_id+
+  const ops=manual?('<button class="mini" onclick="openFill(\''+g.signal_id+
    '\',\''+g.symbol+'\',\''+(g.side==='BUY'?'买入':'卖出')+'\')">回填成交</button>'+
    '<button class="mini warn" onclick="doSkip(\''+g.signal_id+'\')">放弃</button>'):'';
   return row([[g.signal_date.slice(5),''],
@@ -318,12 +322,13 @@ function renderSignals(s,m,cur){
   [g.side==='BUY'?'买入':'卖出',g.side==='BUY'?'up':'dn'],
   [g.symbol,''],
   [g.est_amount?cur+fmt(g.est_amount,0):'--',''],
-  [g.note||(g.reason||'').slice(0,50)||(live?'等你在券商App下单后回填':'挂单待撮合'),
+  [g.note||(g.reason||'').slice(0,50)||(manual?'等你在券商App下单后回填':'挂单待撮合'),
    g.note?'warn':''],
   [ops,'']])});
- const banner=live?'<div class="hint" style="color:var(--warn)">实盘模式:去券商App按信号下单,成交后点「回填成交」录入实际价/量/费,系统按真实资金流记账</div>':'';
+ const banner=api?'<div class="hint" style="color:var(--dn)">实盘·券商API自动下单:信号触发即市价单直连券商,成交价/数量以券商回报为准自动记账</div>':
+  (manual?'<div class="hint" style="color:var(--warn)">实盘·人工通道:去券商App按信号下单,成交后点「回填成交」录入实际价/量/费</div>':'');
  return banner+(sg.length?'<table><tr><th>信号日</th><th>规则</th><th>方向</th>'+
-  '<th>标的</th><th>预估金额</th><th>备注</th>'+(live?'<th>操作</th>':'')+'</tr>'+
+  '<th>标的</th><th>预估金额</th><th>备注</th>'+(manual?'<th>操作</th>':'')+'</tr>'+
   sg.join('')+'</table>':
   '<div class="empty">无待执行信号(收盘后按规则生成,没有信号就不打扰)</div>');
 }
@@ -359,7 +364,8 @@ function renderCN(s){
  const p=s.total_pnl;
  $('pnl-cn').textContent=(p>0?'+':'')+'¥'+fmt(p,0)+' ('+fmt(p/s.equity*100,1)+'%)';
  $('pnl-cn').className='v '+cls(p);
- $('status-cn').textContent=(MODE.cn==='live'?'实盘·人工下单 · ':'')+
+ $('status-cn').textContent=(MODE.cn==='live-api'?'实盘·券商API自动下单 · ':
+  MODE.cn==='live-manual'?'实盘·人工下单 · ':'')+
   (s.killed?'已熔断(人工复位)':(s.cooldown?'冷却中':'运行中'));
  $('status-cn').style.color=s.killed?'var(--up)':(s.cooldown?'var(--warn)':'var(--dn)');
  const pos=(s.positions||[]).map(p=>row([[p.symbol,''],
@@ -388,7 +394,8 @@ function renderUS(s){
  const p=s.total_pnl;
  $('pnl-us').textContent=(p>0?'+':'')+'$'+fmt(p,0)+' ('+fmt(p/s.equity*100,1)+'%)';
  $('pnl-us').className='v '+cls(p);
- $('session-us').textContent=(MODE.us==='live'?'实盘·人工下单 · ':'')+
+ $('session-us').textContent=(MODE.us==='live-api'?'实盘·券商API自动下单 · ':
+  MODE.us==='live-manual'?'实盘·人工下单 · ':'')+
   (s.session||'未生成(等06:10信号周期)');
  const a=s.alloc||{};
  $('seg-core').style.width=((a.core_pct||0)*100).toFixed(1)+'%';
@@ -633,7 +640,9 @@ def create_app(engine: Engine, us_engine: Optional[UsEngine] = None) -> FastAPI:
             })
         return {
             "currency": "CNY",
-            "mode": engine.mode,
+            "mode": (engine.mode + ("-api" if getattr(engine, "live_api", False)
+                                    else "-manual") if engine.mode == "live"
+                     else "paper"),
             "equity": round(equity, 0), "cash": round(acc.cash, 0) if acc else 0,
             "market_value": round(mv, 0), "day_pnl": round(day_pnl, 0),
             "total_pnl": round(equity - engine.capital, 0),
@@ -693,7 +702,9 @@ def create_app(engine: Engine, us_engine: Optional[UsEngine] = None) -> FastAPI:
             fx = None
         return {
             "currency": "USD",
-            "mode": us.mode,
+            "mode": (us.mode + ("-api" if getattr(us, "live_api", False)
+                                else "-manual") if us.mode == "live"
+                     else "paper"),
             "equity": round(equity, 0), "cash": round(acc.cash, 0),
             "market_value": round(mv, 0), "day_pnl": round(day_pnl, 0),
             "total_pnl": round(equity - us.capital, 0),

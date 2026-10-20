@@ -153,6 +153,10 @@ broker:
     slippage: 0.001
     limit_up_pct: 0.098         # X4:开盘涨幅>=9.8%视为涨停,买入顺延
     limit_down_pct: -0.098      # X3:开盘跌幅<=-9.8%视为跌停,卖单挂起次日再试
+  api:                           # A股券商API直连(QMT/miniQMT 接口位,未实现)
+    enabled: false               # 接入:Windows+券商开通miniQMT+pip install xtquant,
+    provider: qmt                # 在 engine.py live 分支返回 QmtBroker 即可,撮合分支零改动
+                                 # enabled=false 时 live 模式走人工通道
 
 # ============================================================
 # 调度(X1:收盘后算信号,次日开盘撮合;盘中不再产生交易决策)
@@ -218,10 +222,21 @@ us:
     signal_time: "06:10"      # 北京时间,美股收盘后算信号(C1 只用收盘价)
     execute_time: "22:40"     # 北京时间,美股开盘后按开盘价撮合(冬令时开盘22:30)
     stale_signal_days: 5      # 信号挂起超过5个交易日作废重评
-  broker:                     # 汇丰美股费用(纸面如实模拟,美元)
+  broker:                     # 费用模型(美元)
     commission_rate: 0.0001    # 交易荟 0.01%
     commission_min: 18.0      # 标准佣金每单最低 18 美元(首1000股)
     slippage: 0.001           # 滑点对我不利方向,不自己骗自己
+    api:                       # 券商API直连下单(live 模式自动下单通道)
+      enabled: true
+      provider: alpaca         # 当前实现 Alpaca(REST);富途/长桥/IBKR 接口位已留
+      # 先用 paper key 联调(免费): https://app.alpaca.markets/signup 开Paper账户
+      # 通过准则"3个月模拟盘"后再换真实key
+      base_url: https://paper-api.alpaca.markets   # 真钱改 https://api.alpaca.markets
+      key_id: ""               # 留空则读环境变量 ALPACA_KEY_ID
+      secret: ""               # 留空则读环境变量 ALPACA_SECRET
+      timeout_sec: 30          # 市价单回报超时(超时不补单,人工核实)
+      poll_seconds: 1
+      zero_commission: true    # Alpaca 美股零佣金;券商收费则改 false 按回报计费
   risk:                        # 准则的仓位上限在策略层(C5/R2/R3/R4);这里只留最终安全网
     max_position_pct: 1.0     # 不启用单票上限(QQQM 底仓合法占比 28%)
     max_total_exposure: 1.05  # 不启用总仓位上限(现金停泊 SGOV 后总市值可达 ~98%)

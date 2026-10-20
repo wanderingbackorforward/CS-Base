@@ -28,9 +28,14 @@ def _is_us_engine(engine) -> bool:
     return isinstance(engine, UsEngine)
 
 
-def find_signal(store, signal_id: str) -> PendingSignal | None:
-    """精确匹配或唯一前缀匹配待执行信号。"""
-    pend = store.pending_signals()
+def find_signal(store, signal_id: str,
+                statuses: tuple = ("PENDING",)) -> PendingSignal | None:
+    """精确匹配或唯一前缀匹配信号。
+
+    默认只找待执行(PENDING);fill/skip 补记券商超时单时会带上
+    CANCELLED(券商单已提交但回报超时,人工核实后补记的场景)。
+    """
+    pend = store.pending_signals(statuses=statuses)
     for s in pend:
         if s.signal_id == signal_id:
             return s
@@ -101,7 +106,8 @@ def fill_signal(engine, signal_id: str, price: float, qty: int,
     mood:下单时情绪 1-5(D2 纪律字段,可选)。
     返回 {"ok": bool, "msg": str}。
     """
-    sig = find_signal(engine.store, signal_id)
+    sig = find_signal(engine.store, signal_id,
+                      statuses=("PENDING", "CANCELLED"))   # CANCELLED=券商超时单补记
     if sig is None:
         return {"ok": False, "msg": f"找不到待执行信号: {signal_id}"}
     if price is None or price <= 0 or not qty or qty <= 0:
@@ -143,10 +149,17 @@ def fill_signal(engine, signal_id: str, price: float, qty: int,
 
 # ---------------- 放弃:不下单了 ----------------
 def skip_signal(engine, signal_id: str, note: str = "") -> dict:
-    """放弃信号:订单作废、档位释放,等下一次触发条件重新评估。"""
-    sig = find_signal(engine.store, signal_id)
+    """放弃信号:订单作废、档位释放,等下一次触发条件重新评估。
+
+    也用于券商超时单确认未成交的场景(信号已是 CANCELLED,这里释放档位)。
+    """
+    sig = find_signal(engine.store, signal_id,
+                      statuses=("PENDING", "CANCELLED"))
     if sig is None:
         return {"ok": False, "msg": f"找不到待执行信号: {signal_id}"}
+    if sig.status == "CANCELLED" and "超时" in (sig.note or ""):
+        log.warning("该信号来自券商超时单:请先在券商App确认确实未成交再释放档位,"
+                    "若已成交请用 fill 补记(%s)", sig.signal_id)
     broker = ManualBroker(engine.store)
     order = broker.find(sig)
     if order is not None and order.status == OrderStatus.PENDING:

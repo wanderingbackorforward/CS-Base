@@ -12,6 +12,8 @@ Engine/策略层零改动。
 from __future__ import annotations
 
 import logging
+import os
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Optional
@@ -245,4 +247,146 @@ class ManualBroker:
         self.store.save_order(order)
         log.info("实盘成交(人工回填) %s %s x%d @%.4g 费%.2g | %s",
                  order.side.value, order.symbol, qty, price, fee, order.reason)
+        return order
+
+
+class ApiBrokerError(Exception):
+    pass
+
+
+class ApiBroker(Broker):
+    """券商 API 直连下单(live 模式,当前实现 Alpaca 美股)。
+
+    与 PaperBroker 同签名:execute(order, ref_price, account, positions),
+    引擎撮合分支零改动——live+API 时把 self.broker 换成本类即可。
+
+    语义:
+    - 下券商市价单 -> 轮询订单状态直到 filled / 拒绝 / 超时;
+    - 成交价、数量、费用一律以券商回报为准(系统不猜);
+    - 结算复用 ManualBroker.settle(真实资金流记账,美股 T+0);
+    - 超时绝不再补单(防重复成交):订单留 PENDING,信号关闭并注明
+      券商单号,由人工核实后 fill 补记或跳过。
+
+    密钥配置(config us.broker.api,环境变量优先):
+      key_id / secret,或环境变量 ALPACA_KEY_ID / ALPACA_SECRET。
+    base_url 默认 paper(paper-api.alpaca.markets),实盘切
+      https://api.alpaca.markets(准则:先跑通模拟盘再动真钱)。
+
+    其他券商(富途OpenAPI/老虎/长桥/IBKR/QMT)接入:实现 _submit/_poll
+    两个方法 + configured(),execute() 状态机通用。
+    """
+
+    def __init__(self, cfg: Section, store: Store) -> None:
+        import requests  # 延迟导入:离线环境不影响其他 broker
+        self._requests = requests
+        self.store = store
+        api = cfg["broker"]["api"]
+        self.provider = str(api.get("provider", "alpaca"))
+        self.base_url = str(api.get("base_url",
+                                    "https://paper-api.alpaca.markets")).rstrip("/")
+        self.key_id = os.environ.get("ALPACA_KEY_ID") or str(api.get("key_id", "") or "")
+        self.secret = os.environ.get("ALPACA_SECRET") or str(api.get("secret", "") or "")
+        self.poll_seconds = float(api.get("poll_seconds", 1.0))
+        self.timeout_sec = float(api.get("timeout_sec", 30))
+        self.zero_commission = bool(api.get("zero_commission", True))
+
+    def configured(self) -> bool:
+        return bool(self.key_id and self.secret)
+
+    # ---------- Alpaca REST ----------
+    def _headers(self) -> dict:
+        return {"APCA-API-KEY-ID": self.key_id,
+                "APCA-API-SECRET-KEY": self.secret}
+
+    @staticmethod
+    def _strip(symbol: str) -> str:
+        return symbol[2:] if symbol[:2] == "US" else symbol
+
+    def _submit(self, order: Order) -> str:
+        r = self._requests.post(
+            f"{self.base_url}/v2/orders", headers=self._headers(),
+            json={"symbol": self._strip(order.symbol), "qty": str(order.qty),
+                  "side": order.side.value.lower(), "type": "market",
+                  "time_in_force": "day"}, timeout=10)
+        if r.status_code not in (200, 201, 207):
+            raise ApiBrokerError(f"HTTP{r.status_code}: {r.text[:200]}")
+        return str(r.json()["id"])
+
+    def _poll(self, oid: str) -> dict:
+        r = self._requests.get(f"{self.base_url}/v2/orders/{oid}",
+                               headers=self._headers(), timeout=10)
+        if r.status_code != 200:
+            raise ApiBrokerError(f"查询失败 HTTP{r.status_code}: {r.text[:200]}")
+        return r.json()
+
+    def account_info(self) -> dict:
+        """连通性/对账:券商账户概要。"""
+        r = self._requests.get(f"{self.base_url}/v2/account",
+                               headers=self._headers(), timeout=10)
+        if r.status_code != 200:
+            raise ApiBrokerError(f"HTTP{r.status_code}: {r.text[:200]}")
+        d = r.json()
+        return {"status": d.get("status"), "currency": d.get("currency"),
+                "cash": float(d.get("cash", 0) or 0),
+                "equity": float(d.get("equity", 0) or 0),
+                "buying_power": float(d.get("buying_power", 0) or 0)}
+
+    # ---------- 执行(与 PaperBroker 同签名) ----------
+    def execute(self, order: Order, ref_price: float, account: Account,
+                 positions: dict[str, Position]) -> Order:
+        if not self.configured():
+            order.status = OrderStatus.REJECTED
+            order.reason += " | 拒单:券商API密钥未配置(us.broker.api 或 ALPACA_KEY_ID/ALPACA_SECRET)"
+            self.store.save_order(order)
+            return order
+        if order.qty <= 0:
+            order.status = OrderStatus.REJECTED
+            order.reason += " | 拒单:数量非法"
+            self.store.save_order(order)
+            return order
+
+        try:
+            oid = self._submit(order)
+            log.info("券商API市价单已提交 %s %s x%d -> 券商单号 %s",
+                     order.side.value, order.symbol, order.qty, oid)
+        except Exception as e:  # noqa: BLE001 网络与拒单统一按拒单处理
+            order.status = OrderStatus.REJECTED
+            order.reason += f" | 券商拒单:{e}"
+            self.store.save_order(order)
+            log.warning("券商下单失败 %s: %s", order.symbol, e)
+            return order
+
+        deadline = time.time() + self.timeout_sec
+        while time.time() < deadline:
+            try:
+                d = self._poll(oid)
+            except Exception as e:  # noqa: BLE001 查询抖动:继续等
+                log.warning("券商订单查询抖动 %s: %s", oid, e)
+                time.sleep(self.poll_seconds)
+                continue
+            st = str(d.get("status", ""))
+            if st == "filled":
+                px = float(d.get("filled_avg_price") or 0)
+                qty = int(float(d.get("filled_qty") or 0))
+                fee = 0.0 if self.zero_commission else float(d.get("filled_fee") or 0)
+                if px > 0 and qty > 0:
+                    order.reason += f" | 券商单{oid}"
+                    order = ManualBroker(self.store).settle(
+                        order, px, qty, fee, account, positions, t_plus_1=False)
+                    return order
+                break                     # 成交但价格异常,按超时路径处理
+            if st in ("canceled", "expired", "rejected", "pending_cancel"):
+                order.status = OrderStatus.REJECTED
+                order.reason += (f" | 券商状态{st}:"
+                                 f"{d.get('cancel_reason') or d.get('reject_reason') or ''}")
+                self.store.save_order(order)
+                return order
+            time.sleep(self.poll_seconds)
+
+        # 超时:券商单已提交,绝不自动补单(防重复成交)——留人工核实
+        order.status = OrderStatus.PENDING
+        order.reason += (f" | 券商单{oid}超时{self.timeout_sec}s未回报:"
+                         f"到券商App核实;已成交则 fill 补记,未成交则不管")
+        self.store.save_order(order)
+        log.warning("券商单超时未回报 %s(%s),保留人工核实", oid, order.symbol)
         return order
