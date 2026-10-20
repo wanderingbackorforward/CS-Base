@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .models import Account, HeatReport, Order, Position
+from .models import Account, HeatReport, Order, PendingSignal, Position
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -38,8 +38,18 @@ CREATE TABLE IF NOT EXISTS equity_curve (
 CREATE TABLE IF NOT EXISTS heat_reports (
     ts TEXT, source TEXT, data TEXT
 );
+CREATE TABLE IF NOT EXISTS pending_signals (
+    signal_id TEXT PRIMARY KEY, symbol TEXT, side TEXT, signal_date TEXT,
+    strategy TEXT, rule TEXT, reason TEXT, size_hint_pct REAL, sell_ratio REAL,
+    qty INTEGER, tranche TEXT, trigger_high REAL, status TEXT,
+    executed_date TEXT, filled_price REAL, filled_qty INTEGER, note TEXT
+);
+CREATE TABLE IF NOT EXISTS pool_states (
+    symbol TEXT PRIMARY KEY, data TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
 CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity_curve(ts);
+CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_signals(status);
 """
 
 
@@ -156,6 +166,56 @@ class Store:
             "SELECT data FROM heat_reports ORDER BY ts DESC LIMIT 1")
         return HeatReport.from_json(rows[0][0]) if rows else None
 
+    # ---------- 待执行信号(X1:收盘后算,次日开盘撮合) ----------
+    _SIG_COLS = ("signal_id,symbol,side,signal_date,strategy,rule,reason,"
+                 "size_hint_pct,sell_ratio,qty,tranche,trigger_high,status,"
+                 "executed_date,filled_price,filled_qty,note")
+
+    def save_signal(self, s: PendingSignal) -> None:
+        d = s.to_dict()
+        self._exec(
+            "INSERT OR REPLACE INTO pending_signals("
+            f"{self._SIG_COLS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            tuple(d[c] for c in self._SIG_COLS.split(",")),
+        )
+
+    def pending_signals(self, statuses: tuple[str, ...] = ("PENDING",)) -> list[PendingSignal]:
+        marks = ",".join("?" * len(statuses))
+        rows = self._query(
+            f"SELECT {self._SIG_COLS} FROM pending_signals "
+            f"WHERE status IN ({marks}) ORDER BY signal_date, signal_id",
+            statuses)
+        out = []
+        for r in rows:
+            d = dict(zip(self._SIG_COLS.split(","), r))
+            out.append(PendingSignal.from_dict(d))
+        return out
+
+    def recent_signals(self, limit: int = 50) -> list[PendingSignal]:
+        rows = self._query(
+            f"SELECT {self._SIG_COLS} FROM pending_signals "
+            "ORDER BY signal_date DESC, signal_id DESC LIMIT ?", (limit,))
+        out = []
+        for r in rows:
+            d = dict(zip(self._SIG_COLS.split(","), r))
+            out.append(PendingSignal.from_dict(d))
+        return out
+
+    # ---------- 池子档位状态(value_dip 策略状态机) ----------
+    def save_pool_state(self, symbol: str, data: dict) -> None:
+        self._exec(
+            "INSERT OR REPLACE INTO pool_states(symbol,data) VALUES(?,?)",
+            (symbol, json.dumps(data, ensure_ascii=False)),
+        )
+
+    def pool_state(self, symbol: str, default: dict | None = None) -> dict:
+        rows = self._query("SELECT data FROM pool_states WHERE symbol=?", (symbol,))
+        return json.loads(rows[0][0]) if rows else (default or {})
+
+    def all_pool_states(self) -> dict[str, dict]:
+        rows = self._query("SELECT symbol,data FROM pool_states")
+        return {r[0]: json.loads(r[1]) for r in rows}
+
     # ---------- 人工可读快照 ----------
     def export_snapshot(self) -> Path:
         """每次决策后导出一份人可读 JSON(方便肉眼检查/迁移/提交私有仓库)。"""
@@ -165,6 +225,7 @@ class Store:
             "account": acc.to_dict() if acc else None,
             "positions": [p.to_dict() for p in self.all_positions().values()],
             "orders_recent": [o.to_dict() for o in self.recent_orders(30)],
+            "signals_recent": [s.to_dict() for s in self.recent_signals(30)],
         }
         path = self.dir / "snapshot.json"
         path.write_text(

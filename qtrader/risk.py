@@ -32,10 +32,14 @@ class RiskManager:
         self.daily_loss_limit = float(r.get("daily_loss_limit_pct", -0.03))
         self.cooldown_days = int(r.get("cooldown_days", 2))
         self.kill_drawdown = float(r.get("max_drawdown_kill", -0.15))
+        # 准则 v2.0:逆向分档买入体系,大盘走弱恰是买点 -> 趋势降仓默认关闭
+        self.regime_enabled = bool(r.get("regime_enabled", False))
 
     # ---------- 仓位约束 ----------
     def exposure_cap(self, regime_close: pd.Series | None) -> float:
         """根据大盘趋势返回当前允许的总仓位上限(0~1)。"""
+        if not self.regime_enabled:
+            return self.max_total_exposure
         if regime_close is None or len(regime_close) < self.regime_ma:
             return min(self.max_total_exposure, 0.5)  # 数据不足,保守半仓
         ma = float(regime_close.iloc[-self.regime_ma:].mean())

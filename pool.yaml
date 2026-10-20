@@ -1,0 +1,138 @@
+# ============================================================
+# 生效股票池(pool.yaml)— A股投资准则 v2.0 P3/P4
+#
+# 生成流程:
+#   1) python main.py pool     -> P1 硬条件自动筛,产出 data/pool_candidates.csv
+#   2) 人工逐只 P2 判断(一句话说清靠什么赚钱/行业地位/不依赖单一客户)
+#   3) 通过的写进本文件,填好理由卡(P4),value_dip 才会交易它
+#   4) 每年 4月底/8月底/10月底(P6)重跑 pool 命令,移出不再满足硬条件的,
+#      持仓股触发 G11 人工复核
+#
+# 注意:
+# - 本文件为初稿模板,理由卡仅为示范,正式使用前必须自己过一遍 P2;
+# - 只放沪深主板(60/00开头):1万元无北交所/科创板/创业板实盘权限,
+#   引擎的市场闸门也会把无权限标的过滤掉;
+# - 行业字段用于 G2 同行业上限(<=25%)与 P5 周期股 PB 估值切换。
+# ============================================================
+
+stocks:
+  - symbol: SH600036
+    name: 招商银行
+    industry: 银行
+    how_it_makes_money: 零售信贷与财富管理的手息差和中间业务收入
+    thesis:
+      - 零售银行标杆,负债成本行业最低
+      - 财富管理转型带来中收增长
+      - 分红率长期保持30%以上
+    invalid_signals:
+      - 不良率连续两年显著上升
+      - 净息差跌破1.5%且无见底迹象
+    max_wait_years: 2
+  - symbol: SH600900
+    name: 长江电力
+    industry: 电力
+    how_it_makes_money: 六座水电站发电卖电,成本固定,现金流像债券票息
+    thesis:
+      - 长江流域六库联调,来水长期稳定
+      - 电价市场化后仍有提价空间
+      - 承诺分红,类债属性压舱
+    invalid_signals:
+      - 来水连续两年大幅低于设计值
+      - 电价政策转向大幅压价
+    max_wait_years: 3
+  - symbol: SH600309
+    name: 万华化学
+    industry: 化工
+    how_it_makes_money: MDI 全球寡头垄断的价差,叠加石化一体化利润
+    thesis:
+      - MDI 全球三家垄断,技术壁垒极高
+      - 福建/匈牙利基地扩张带来量增
+      - 周期底部现金流仍为正
+    invalid_signals:
+      - MDI 价差跌破历史极端低位且持续一年以上
+      - 大额资本开支失控,负债率飙升
+    max_wait_years: 2
+  - symbol: SZ000333
+    name: 美的集团
+    industry: 家电
+    how_it_makes_money: 全品类家电制造成本领先,叠加 ToB 机器人与楼宇业务
+    thesis:
+      - 全球家电份额第一,T+3 供应链效率极高
+      - 库卡机器人与楼宇科技第二曲线
+      - 高分红+回购,治理规范
+    invalid_signals:
+      - 海外订单连续三个季度负增长
+      - ToB 业务连续大幅减值
+    max_wait_years: 2
+  - symbol: SH600887
+    name: 伊利股份
+    industry: 食品饮料
+    how_it_makes_money: 液态奶与奶粉的渠道+品牌溢价
+    thesis:
+      - 常温奶绝对龙头,渠道下沉到乡镇
+      - 奶粉逆势份额提升,成人奶粉高增
+      - 原奶价格见底利好毛利率
+    invalid_signals:
+      - 原奶价格长期双位数上涨而提价失败
+      - 食品安全事故
+    max_wait_years: 2
+  - symbol: SH601088
+    name: 中国神华
+    industry: 煤炭
+    how_it_makes_money: 煤电路港航一体化,长协煤价锁定利润
+    thesis:
+      - 长协占比高,盈利波动远小于同业
+      - 一体化成本优势,煤价底也能盈利
+      - 分红率70%+,类债属性
+    invalid_signals:
+      - 长协政策转向,煤价市场化暴跌
+      - 能源转型导致资本开支大增分流分红
+    max_wait_years: 3
+  - symbol: SH600690
+    name: 海尔智家
+    industry: 家电
+    how_it_makes_money: 冰洗空调高端化(Casarte)+海外自有品牌盈利改善
+    thesis:
+      - 高端品牌卡萨帝利润率领先
+      - 海外市场本土化运营,盈利中枢上移
+      - 数字化变革降费
+    invalid_signals:
+      - 卡萨帝增速转负
+      - 海外业务利润率连续下滑
+    max_wait_years: 2
+  - symbol: SH600585
+    name: 海螺水泥
+    industry: 建材
+    how_it_makes_money: 水泥制造成本最低(T型战略),行业景气周期里赚价差
+    thesis:
+      - 华东中南产能布局最优,成本曲线最左端
+      - 现金充沛,每年大额分红
+      - 行业错峰生产自律性增强
+    invalid_signals:
+      - 地产开工持续萎缩导致水泥需求连年两位数下滑
+      - 行业价格战重启,吨毛利跌破成本线
+    max_wait_years: 3
+  - symbol: SH600519
+    name: 贵州茅台
+    industry: 食品饮料
+    how_it_makes_money: 茅台酒品牌垄断溢价,出厂价与批价的价差护城河
+    thesis:
+      - 提价权在手,需求刚性
+      - 直营化改革增厚利润
+      - 现金奶牛,分红率提升
+    invalid_signals:
+      - 批价持续跌破出厂价
+      - 需求侧政策限制加剧
+    max_wait_years: 3
+  - symbol: SZ000858
+    name: 五粮液
+    industry: 食品饮料
+    how_it_makes_money: 浓香型白酒品牌溢价,千元价格带垄断地位
+    thesis:
+      - 高端白酒双寡头之一
+      - 渠道改革,控量保价
+      - 分红率提升至60%+
+    invalid_signals:
+      - 批价倒挂持续恶化
+      - 库存高企迫使大力度折价清货
+    max_wait_years: 2

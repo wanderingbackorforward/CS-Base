@@ -54,9 +54,10 @@ color:var(--dim);display:none}
 <div class="card"><div class="k">状态</div><div class="v" style="font-size:14px" id="status">--</div></div>
 </div>
 <div class="panel"><h2>净值曲线</h2><div id="chart"><div class="empty">加载中…</div></div></div>
+<div class="panel"><h2>待执行信号(收盘后生成,次日开盘撮合 X1)</h2><div id="signals"></div></div>
 <div class="panel"><h2>当前持仓</h2><div id="positions"></div></div>
-<div class="panel"><h2>信号流(策略说了什么人话)</h2><div id="orders"></div></div>
-<div class="panel"><h2>今日热点(★=你关注的方向)</h2><div id="heat"></div></div>
+<div class="panel"><h2>档位状态机(G3-G8 各份生命周期)</h2><div id="tranches"></div></div>
+<div class="panel"><h2>成交记录(每笔带规则编号,无编号=违规)</h2><div id="orders"></div></div>
 <div class="toast" id="toast"></div></div>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"
  onerror="window.__noecharts=1"></script>
@@ -103,6 +104,20 @@ async function refresh(){
   $('positions').innerHTML=s.positions.length?'<table><tr><th>标的</th><th>策略</th>'+
    '<th>数量×成本</th><th>浮盈</th><th>盈亏%</th><th>止损线</th><th>持有日</th></tr>'+
    pos.join('')+'</table>':'<div class="empty">空仓(等信号)</div>';
+  const sg=(s.signals||[]).map(g=>row([[g.signal_date.slice(5),''],
+   ['<span class="badge">'+g.rule+'</span>',''],
+   [g.side==='BUY'?'买入':'卖出',g.side==='BUY'?'up':'dn'],
+   [g.symbol,''],[g.note||'挂单待撮合',g.note?'dn':'']]));
+  $('signals').innerHTML=sg.length?'<table><tr><th>信号日</th><th>规则</th><th>方向</th>'+
+   '<th>标的</th><th>备注</th></tr>'+sg.join('')+'</table>':
+   '<div class="empty">无待执行信号(等收盘后15:10生成)</div>';
+  const tr=(s.tranches||[]).map(t=>row([[t.symbol,''],
+   ['<span class="badge">'+t.tranche+'</span>',''],[t.state,''],
+   [fmt(t.trigger_high,2),''],[t.qty,''],
+   [t.needs_review?'⚠ '+t.review_note:(t.rule_hint||''),'',t.needs_review?'dn':'']]));
+  $('tranches').innerHTML=tr.length?'<table><tr><th>标的</th><th>档位</th><th>状态</th>'+
+   '<th>触发前高</th><th>数量</th><th>备注</th></tr>'+tr.join('')+'</table>':
+   '<div class="empty">全部档位空闲(等G3触发)</div>';
   const od=s.orders.map(o=>row([[o.ts.slice(5),''],
    [o.side==='BUY'?'买入':'卖出',o.side==='BUY'?'up':'dn'],
    [o.symbol,''],[o.status==='FILLED'?fmt(o.filled_qty):'-',''],
@@ -110,16 +125,7 @@ async function refresh(){
    [o.reason,o.status==='REJECTED'?'dn':'']]));
   $('orders').innerHTML=s.orders.length?'<table><tr><th>时间</th><th>方向</th><th>标的</th>'+
    '<th>数量</th><th>价格</th><th>费用</th><th>理由</th></tr>'+od.join('')+'</table>':
-   '<div class="empty">还没有信号</div>';
-  const h=await (await fetch('/api/heat')).json();
-  const rows=h.items.map(i=>row([[i.rank===99?'★':'#'+i.rank,''],
-   [(i.is_watch?'★ ':'')+i.name,i.is_watch?'pos':''],
-   [fmt(i.day_chg*100,2)+'%',cls(i.day_chg)],
-   [fmt(i.amount/1e8,1)+'亿',''],
-   [(i.top_stocks||[]).slice(0,6).join(' / '),'']]));
-  $('heat').innerHTML=rows.length?'<table><tr><th>排名</th><th>板块</th><th>涨幅</th>'+
-   '<th>成交额</th><th>头部成分</th></tr>'+rows.join('')+'</table>'+
-   (h.source==='spot_aggregate'?'<div class="empty" style="padding:6px">兜底模式:东财板块接口不可用,已用全A强势股聚合</div>':''):'<div class="empty">暂无热度数据</div>';
+   '<div class="empty">还没有成交</div>';
  }catch(e){
   $('toast').style.display='block';$('toast').textContent='刷新失败: '+e;
  }
@@ -168,6 +174,26 @@ def create_app(engine: Engine) -> FastAPI:
             d = o.to_dict()
             d["reason"] = (o.reason or "")[:120]
             orders.append(d)
+        signals = []
+        for g in store.pending_signals():
+            d = g.to_dict()
+            d["reason"] = (g.reason or "")[:120]
+            signals.append(d)
+        tranches = []
+        for sym, st in store.all_pool_states().items():
+            if st.get("needs_review"):
+                tranches.append({"symbol": sym, "tranche": "-", "state": "复核",
+                                 "trigger_high": 0, "qty": 0,
+                                 "needs_review": True,
+                                 "review_note": str(st.get("review_note", ""))[:80]})
+                continue
+            for key, tr in (st.get("tranches") or {}).items():
+                if tr.get("state") not in ("available",):
+                    tranches.append({"symbol": sym, "tranche": key,
+                                     "state": tr.get("state", ""),
+                                     "trigger_high": tr.get("trigger_high", 0),
+                                     "qty": tr.get("qty", 0),
+                                     "needs_review": False, "rule_hint": ""})
         return {
             "equity": round(equity, 0), "cash": round(acc.cash, 0) if acc else 0,
             "market_value": round(mv, 0), "day_pnl": round(day_pnl, 0),
@@ -175,6 +201,7 @@ def create_app(engine: Engine) -> FastAPI:
             "killed": bool(acc.killed) if acc else False,
             "cooldown": store.get_meta("cooldown_until"),
             "positions": rows, "orders": orders,
+            "signals": signals, "tranches": tranches,
         }
 
     @app.get("/api/state")
@@ -184,15 +211,6 @@ def create_app(engine: Engine) -> FastAPI:
     @app.get("/api/equity")
     def api_equity() -> JSONResponse:
         return JSONResponse(store.equity_curve())
-
-    @app.get("/api/heat")
-    def api_heat() -> JSONResponse:
-        report = store.latest_heat()
-        if report is None:
-            return JSONResponse({"ts": "", "source": "", "items": []})
-        items = [i.__dict__ for i in report.items]
-        return JSONResponse({"ts": report.ts.isoformat(), "source": report.source,
-                            "items": items})
 
     @app.post("/api/reset")
     def api_reset() -> dict:

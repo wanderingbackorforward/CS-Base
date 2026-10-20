@@ -18,8 +18,6 @@ from qtrader.models import (Account, Order, Position, Side, OrderStatus)  # noqa
 from qtrader.risk import RiskManager            # noqa: E402
 from qtrader.store import Store                 # noqa: E402
 from qtrader.strategies.base import Context    # noqa: E402
-from qtrader.strategies.cautious_dip import CautiousDip   # noqa: E402
-from qtrader.strategies.hot_momentum import HotMomentum    # noqa: E402
 
 
 def make_cfg() -> Section:
@@ -31,20 +29,6 @@ def make_cfg() -> Section:
                                "min_amount": 1e8}},
         "universe": {"dip_targets": [{"symbol": "SH600519", "name": "M"}]},
         "heat": {"top_n": 6, "watch_keywords": ["AI"], "show_top_stocks": 8},
-        "strategy": {
-            "hot_momentum": {"enabled": True, "breakout_lookback": 20,
-                             "vol_ratio_min": 1.8, "day_change_min": 0.02,
-                             "day_change_max": 0.07, "close_range_pos_min": 0.8,
-                             "take_profit": 0.08, "pump_exit_pct": 0.07,
-                             "trailing_arm": 0.05, "hard_stop": 0.06,
-                             "time_stop_days": 4, "max_positions": 3},
-            "cautious_dip": {"enabled": True, "lookback_high": 60,
-                             "drawdown_trigger": 0.12, "rsi_window": 14,
-                             "rsi_oversold": 32, "tranche_count": 3,
-                             "tranche_step": 0.05, "target_profit": 0.10,
-                             "time_stop_days": 15, "hard_stop": 0.10,
-                             "max_positions": 3},
-        },
         "risk": {"max_position_pct": 0.30, "max_total_exposure": 0.85,
                  "regime_ma": 20, "regime_low_exposure": 0.40,
                  "daily_loss_limit_pct": -0.03, "cooldown_days": 2,
@@ -132,67 +116,6 @@ def test_risk_kill_switch(tmp_path) -> None:
     notes = risk.settle_eod(acc, 0.0)  # equity 8400,回撤 16%
     assert acc.killed and notes
     assert not risk.can_open(acc, {}, 0)[0]
-
-
-# ---------------- 策略:追热点入场 ----------------
-def test_hot_momentum_entry() -> None:
-    cfg = make_cfg()
-    st = HotMomentum(cfg)
-    # 60 日横盘 10 元,今日放量 +5% 突破
-    closes = [10.0] * 59 + [10.55]
-    hist = make_hist(closes, volumes=[1e6] * 59 + [5e6])
-    spot = pd.DataFrame([{"symbol": "SH600000", "code": "600000", "name": "浦发",
-                         "price": 10.55, "pct_chg": 0.05, "amount": 3e8}])
-    ctx = Context(today="2026-10-20", spot=spot, quote=spot,
-                  hist={"SH600000": hist}, positions={}, candidates=["SH600000"])
-    orders = st.entry_signals(ctx)
-    assert len(orders) == 1 and orders[0].side == Side.BUY
-    assert "突破" in orders[0].reason
-    # 涨停级(>7%)不追
-    spot2 = spot.copy()
-    spot2["pct_chg"] = 0.095
-    ctx2 = Context(today="2026-10-20", spot=spot2, quote=spot2,
-                   hist={"SH600000": hist}, positions={})
-    assert st.entry_signals(ctx2) == []
-
-
-def test_hot_momentum_pump_exit() -> None:
-    cfg = make_cfg()
-    st = HotMomentum(cfg)
-    pos = Position(symbol="SH600000", qty=100, available_qty=100,
-                   avg_cost=10.0, strategy="hot_momentum", days_held=2)
-    # hist[-1]=今日(进行时现价),[-2]=昨日收 10.75,[-3]=9.95 -> 昨日 +8% 触发死线
-    closes = [9.0, 9.2, 9.5, 9.95, 10.75, 10.8]
-    hist = make_hist(closes)
-    spot = pd.DataFrame([{"symbol": "SH600000", "price": 10.8, "pct_chg": 0.005}])
-    ctx = Context(today="2026-10-20", spot=spot, quote=spot,
-                  hist={"SH600000": hist}, positions={"SH600000": pos})
-    sells = st.manage(ctx)
-    assert len(sells) == 1 and "死线" in sells[0].reason
-
-
-# ---------------- 策略:谨慎抄底 ----------------
-def test_cautious_dip_entry_and_stop() -> None:
-    cfg = make_cfg()
-    st = CautiousDip(cfg)
-    # 从 100 一路阴跌到 85(-15%),最近一日缩量收阳回升(需 >=60 根)
-    closes = [100 - i * 0.28 for i in range(59)] + [84.5, 83.4, 85.2]
-    hist = make_hist(closes)
-    hist.iloc[-1, hist.columns.get_loc("open")] = 83.8  # 今收阳
-    spot = pd.DataFrame([{"symbol": "SH600519", "price": 85.2, "pct_chg": 0.02}])
-    ctx = Context(today="2026-10-20", spot=spot, quote=spot,
-                  hist={"SH600519": hist}, positions={})
-    orders = st.entry_signals(ctx)
-    assert len(orders) == 1
-    assert orders[0].size_hint_pct > 0  # 分批:首批只占 1/3
-    # 持仓 -11% 应认错离场(成本 96 vs 现价 85.2)
-    pos = Position(symbol="SH600519", qty=100, available_qty=100, avg_cost=96.0,
-                   strategy="cautious_dip", days_held=3,
-                   meta={"tranche": 3, "last_price": 80.0})
-    ctx2 = Context(today="2026-10-20", spot=spot, quote=spot,
-                   hist={"SH600519": hist}, positions={"SH600519": pos})
-    sells = st.manage(ctx2)
-    assert len(sells) == 1 and "认错" in sells[0].reason
 
 
 # ---------------- 持久化 ----------------

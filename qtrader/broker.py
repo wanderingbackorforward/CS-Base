@@ -40,15 +40,27 @@ class PaperBroker(Broker):
         self.slippage = float(p.get("slippage", 0.001))
         self.lot = 100
 
+    @staticmethod
+    def _is_etf(symbol: str) -> bool:
+        """场内ETF(沪市51x/56x/58x开头,深市15x/159开头):免印花税、免过户费。"""
+        mkt, code = split_symbol(symbol)
+        return str(mkt) in ("Market.SH", "SH") and \
+            code[:3] in ("510", "511", "512", "513", "515", "516", "518",
+                         "560", "561", "562", "563", "588") or \
+            str(mkt) in ("Market.SZ", "SZ") and code[:3] in ("159",)
+
     # ---------- 费用 ----------
-    def fee(self, market: Market, side: Side, amount: float) -> float:
+    def fee(self, market: Market, side: Side, amount: float,
+            symbol: str = "") -> float:
         commission = max(amount * self.commission_rate, self.commission_min)
         fee = commission
         if market == Market.HK:
             fee += amount * self.stamp_hk
+        elif symbol and self._is_etf(symbol):
+            pass                      # ETF:免印花税/过户费(准则:ETF交易不收)
         elif side == Side.SELL:
             fee += amount * self.stamp_a
-        if market != Market.HK:
+        if market != Market.HK and not (symbol and self._is_etf(symbol)):
             fee += amount * self.transfer_fee
         return fee
 
@@ -70,7 +82,7 @@ class PaperBroker(Broker):
         if order.side == Side.BUY:
             price = ref_price * (1 + self.slippage)
             amount = price * order.qty
-            fee = self.fee(market, Side.BUY, amount)
+            fee = self.fee(market, Side.BUY, amount, order.symbol)
             if amount + fee > account.cash + 1e-6:
                 order.status = OrderStatus.REJECTED
                 order.reason += f" | 拒单:现金不足(需 {amount + fee:.0f})"
@@ -101,7 +113,7 @@ class PaperBroker(Broker):
                 return order
             price = ref_price * (1 - self.slippage)
             amount = price * qty
-            fee = self.fee(market, Side.SELL, amount)
+            fee = self.fee(market, Side.SELL, amount, order.symbol)
             account.cash += amount - fee
             pos.qty -= qty
             pos.available_qty = max(0, pos.available_qty - qty)

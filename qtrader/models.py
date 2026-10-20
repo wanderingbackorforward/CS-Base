@@ -127,6 +127,45 @@ class Account:
 
 
 @dataclass
+class PendingSignal:
+    """X1 待执行信号:收盘后算出,次日开盘撮合。与 Order 分离——
+    Order 是"已成交事实",PendingSignal 是"明天的计划"。"""
+    symbol: str
+    side: Side
+    signal_date: str               # 信号生成日 "2026-10-20"
+    strategy: str = ""
+    rule: str = ""                 # 规则编号:G3-A/G6/G7/G8/G10/E1/E2/R1/legacy(D3:无编号即违规)
+    reason: str = ""
+    size_hint_pct: float = 0.0     # 买入:每份占净值比例(执行日按开盘价定股数)
+    sell_ratio: float = 1.0        # 卖出:占当前持仓比例(1.0=全部,G6=2/3)
+    qty: int = 0                    # 预定股数(0=执行日按比例现算)
+    tranche: str = ""               # 档位键 A/B/C
+    trigger_high: float = 0.0       # G3:信号日的252日前高(G6的涨回目标)
+    signal_id: str = ""
+    status: str = "PENDING"         # PENDING/EXECUTED/CANCELLED/FAILED
+    executed_date: str = ""
+    filled_price: float = 0.0
+    filled_qty: int = 0
+    note: str = ""                  # 执行备注(涨停顺延/跌停挂起/现金不足)
+
+    def __post_init__(self) -> None:
+        if not self.signal_id:
+            self.signal_id = (f"S{self.signal_date.replace('-', '')}"
+                               f"-{self.symbol}-{self.side.value}-{self.rule}")
+        if isinstance(self.side, Side):
+            self.side = self.side.value
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict[str, Any]) -> "PendingSignal":
+        d = dict(d)
+        d["side"] = Side(d["side"]) if isinstance(d["side"], str) else d["side"]
+        return PendingSignal(**d)
+
+
+@dataclass
 class HeatItem:
     """热度引擎产出:一个概念/行业板块的热度条目"""
     name: str

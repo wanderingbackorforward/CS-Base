@@ -56,6 +56,7 @@ class DataFeed:
         (self.cache_dir / "hist").mkdir(exist_ok=True)
         self.spot_cache_seconds = int(cache_cfg.get("spot_cache_seconds", 120))
         self.hist_cache_hours = int(cache_cfg.get("hist_cache_hours", 12))
+        self.val_cache_hours = int(cache_cfg.get("val_cache_hours", 12))
         self._spot_ts = 0.0
         self._spot_df: Optional[pd.DataFrame] = None
         self._calendar: Optional[list[date]] = None
@@ -304,6 +305,147 @@ class DataFeed:
         df["dt"] = pd.to_datetime(df["dt"])
         df["close"] = pd.to_numeric(df["close"], errors="coerce")
         return df.dropna().sort_values("dt").reset_index(drop=True)
+
+    # ---------------- 市值批量(腾讯,fields[45]=总市值亿元) ----------------
+    def market_caps(self, symbols: list[str]) -> dict[str, float]:
+        """返回 {symbol: 总市值(元)};腾讯批量,60只/请求。"""
+        import requests
+        out: dict[str, float] = {}
+        batch = 60
+        for i in range(0, len(symbols), batch):
+            chunk = [s for s in symbols[i:i + batch] if not s.startswith("HK")]
+            if not chunk:
+                continue
+            qs = ",".join((s[:2].lower() + s[2:]) for s in chunk)
+            try:
+                self._pace()
+                r = requests.get(f"https://qt.gtimg.cn/q={qs}", timeout=8)
+                r.encoding = "gbk"
+                for sym, line in zip(chunk, r.text.strip().split(";")):
+                    if "=" not in line:
+                        continue
+                    f = line.split("=")[1].strip('"').split("~")
+                    if len(f) <= 45 or not f[45]:
+                        continue
+                    try:
+                        out[sym] = float(f[45]) * 1e8
+                    except ValueError:
+                        continue
+            except Exception as e:  # noqa: BLE001
+                log.warning("腾讯市值批量失败(部分): %s", e)
+        return out
+
+    # ---------------- 个股估值历史(PE-TTM / PB,百度) ----------------
+    def stock_val_hist(self, symbol: str, indicator: str = "市盈率(TTM)") -> Optional[pd.DataFrame]:
+        """个股估值历史,列: date/value。indicator: 市盈率(TTM) | 市净率。
+        带缓存(val_cache_hours);失败返回 None(上层降级:视为估值不可知,不买)。"""
+        _, code = split_symbol(symbol)
+        cache = self.cache_dir / "val" / f"{symbol}_{indicator}.csv"
+        cache.parent.mkdir(exist_ok=True)
+        if cache.exists() and time.time() - cache.stat().st_mtime < self.val_cache_hours * 3600:
+            df = pd.read_csv(cache, parse_dates=["date"])
+            return df if len(df) else None
+        raw = self._try("baidu.val", ak.stock_zh_valuation_baidu,
+                        symbol=code, indicator=indicator, period="近五年")
+        if raw is None:
+            return None
+        df = raw.rename(columns={"date": "date", "value": "value"})
+        df["date"] = pd.to_datetime(df["date"])
+        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+        df = df.dropna().sort_values("date").reset_index(drop=True)
+        if df.empty:
+            return None
+        df.to_csv(cache, index=False)
+        return df
+
+    # ---------------- 指数估值历史(乐咕,周频) ----------------
+    def index_pe_hist(self, index_name: str = "沪深300") -> Optional[pd.DataFrame]:
+        """指数PE历史(滚动市盈率),列: date/pe。数据源返回约5年周频,
+        准则要求10年窗口——数据不足时按可得窗口计算并如实标注。"""
+        cache = self.cache_dir / "val" / f"index_{index_name}.csv"
+        cache.parent.mkdir(exist_ok=True)
+        if cache.exists() and time.time() - cache.stat().st_mtime < self.val_cache_hours * 3600:
+            df = pd.read_csv(cache, parse_dates=["date"])
+            return df if len(df) else None
+        raw = self._try("lg.index_pe", ak.stock_index_pe_lg, symbol=index_name)
+        if raw is None:
+            return None
+        col = "滚动市盈率" if "滚动市盈率" in raw.columns else raw.columns[2]
+        df = pd.DataFrame({
+            "date": pd.to_datetime(raw["日期"]),
+            "pe": pd.to_numeric(raw[col], errors="coerce"),
+        }).dropna().sort_values("date").reset_index(drop=True)
+        if df.empty:
+            return None
+        df.to_csv(cache, index=False)
+        return df
+
+    # ---------------- 个股财务(新浪,年频指标) ----------------
+    def fundamentals(self, symbol: str, years: int = 4) -> Optional[pd.DataFrame]:
+        """新浪财务指标(报告期行宽表): 日期/ROE/资产负债率 等。
+        供 pool.py 做 P1 硬条件(ROE/负债率/现金流三表单拉)。"""
+        _, code = split_symbol(symbol)
+        cache = self.cache_dir / "fin" / f"{symbol}_indicator.csv"
+        cache.parent.mkdir(exist_ok=True)
+        if cache.exists() and time.time() - cache.stat().st_mtime < 7 * 86400:
+            return pd.read_csv(cache, dtype={"日期": str})
+        start_year = str(date.today().year - years)
+        raw = self._try("sina.fin_indicator", ak.stock_financial_analysis_indicator,
+                        symbol=code, start_year=start_year)
+        if raw is None:
+            return None
+        raw.to_csv(cache, index=False)
+        return raw
+
+    def fina_report(self, symbol: str, table: str) -> Optional[pd.DataFrame]:
+        """新浪三大报表(宽表:行=报告日,列=科目)。table: 现金流量表|利润表|资产负债表。"""
+        mkt, code = split_symbol(symbol)
+        cache = self.cache_dir / "fin" / f"{symbol}_{table}.csv"
+        cache.parent.mkdir(exist_ok=True)
+        if cache.exists() and time.time() - cache.stat().st_mtime < 7 * 86400:
+            return pd.read_csv(cache, dtype={"报告日": str})
+        raw = self._try(f"sina.{table}", ak.stock_financial_report_sina,
+                        stock=f"{mkt.lower()}{code}", symbol=table)
+        if raw is None:
+            return None
+        raw.to_csv(cache, index=False)
+        return raw
+
+    # ---------------- 分红历史(巨潮) ----------------
+    def dividends(self, symbol: str) -> Optional[pd.DataFrame]:
+        _, code = split_symbol(symbol)
+        cache = self.cache_dir / "fin" / f"{symbol}_dividend.csv"
+        cache.parent.mkdir(exist_ok=True)
+        if cache.exists() and time.time() - cache.stat().st_mtime < 7 * 86400:
+            return pd.read_csv(cache, dtype=str)
+        raw = self._try("cninfo.dividend", ak.stock_dividend_cninfo, symbol=code)
+        if raw is None:
+            return None
+        raw.to_csv(cache, index=False)
+        return raw
+
+    # ---------------- 财报预约披露日历(东财,尽力而为) ----------------
+    def disclosure_dates(self, period: str) -> dict[str, str]:
+        """返回 {code: 预约披露日}。东财接口,沙箱/海外环境不可用时返回空 dict,
+        G5 检查自动降级为"仅日志提醒"。period: '20260930' 等报告期末。"""
+        cache = self.cache_dir / "fin" / f"disclosure_{period}.csv"
+        cache.parent.mkdir(exist_ok=True)
+        if cache.exists() and time.time() - cache.stat().st_mtime < 7 * 86400:
+            df = pd.read_csv(cache, dtype=str)
+        else:
+            raw = self._try("em.disclosure", ak.stock_yysj_em,
+                            symbol="沪深A股", date=period)
+            if raw is None:
+                return {}
+            df = raw
+            df.to_csv(cache, index=False)
+        if df.empty:
+            return {}
+        code_col = next((c for c in ("代码", "股票代码") if c in df.columns), None)
+        date_col = next((c for c in df.columns if "预约" in str(c) and "时间" in str(c)), None)
+        if not code_col or not date_col:
+            return {}
+        return dict(zip(df[code_col].astype(str), df[date_col].astype(str)))
 
     # ---------------- 概念板块(东财) ----------------
     def concept_rank(self) -> Optional[pd.DataFrame]:
