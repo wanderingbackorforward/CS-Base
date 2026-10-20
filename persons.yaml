@@ -1,0 +1,79 @@
+# 美股人物名单(P1-P5):名人只是线索来源,不是照抄对象(v5)
+# 投资人:线索是 13F 前10大持仓(G1:法定定期披露、连续10年、前10大≥50%、
+#         季度换手≤15%、以做多为主;SEC EDGAR 按实际公布日生效)
+# 掌舵人:线索是正在经营的上市公司(创始人仍任CEO/董事长,或连续任CEO满5年)
+#
+# 字段说明:
+#   verified        名单条件还没逐条核实前为 false(系统照样给候选,买不买仍取决于
+#                   H2 硬条件+论点卡 H3+均线 H5,但日志会提示"待核实")
+#   crypto_native   P1:以加密货币为主业/用自己发行的资产拉盘 -> true 即排除
+#   banned          P2:欺诈定罪、认罪或被禁止担任高管 -> true 即排除
+#   settlements     P2:和解但没认罪的不排除,必须写进论点卡风险(H3)
+#   net_sell_12m    P3:近12个月净卖出占本人持股比例(Form 4 季度手更;>0.20 移出候选)
+#   gone            P4:离任/清仓即"来源消失",满2个季度按 H7 卖出
+# 名单只在季度调仓日改,下一季度生效(P5/D1)。
+persons:
+  - id: musk
+    name: 马斯克
+    type: helmsman
+    company: USTSLA
+    role_note: 2008年起任CEO(创始人)
+    verified: true
+    crypto_native: false
+    banned: false
+    settlements:
+      - "2018年SEC证券欺诈和解(未认罪,罚2000万美元,卸任董事长)"
+      - "2026年5月推特持股披露迟延和解(未认罪,罚150万美元)"
+    net_sell_12m: 0.05
+    gone: false
+    gone_since: null
+
+  - id: huang
+    name: 黄仁勋
+    type: helmsman
+    company: USNVDA
+    role_note: 1993年创立英伟达并任CEO至今
+    verified: true
+    crypto_native: false
+    banned: false
+    settlements: []
+    net_sell_12m: 0.08
+    gone: false
+    gone_since: null
+
+  - id: su
+    name: 苏姿丰
+    type: helmsman
+    company: USAMD
+    role_note: 2014年起任CEO(连续任满5年)
+    verified: true
+    crypto_native: false
+    banned: false
+    settlements: []
+    net_sell_12m: 0.02
+    gone: false
+    gone_since: null
+
+  - id: duan_yongping
+    name: 段永平
+    type: investor
+    firm: H&H International
+    verified: false          # 待核实:披露年限/前10大占比/换手率
+    top_holdings: []          # 13F前10大(SEC EDGAR,按实际公布日手更)
+    crypto_native: false
+    banned: false
+    settlements: []
+    gone: false
+    gone_since: null
+
+  - id: li_lu
+    name: 李录
+    type: investor
+    firm: Himalaya Capital
+    verified: false          # 待核实
+    top_holdings: []          # 13F前10大
+    crypto_native: false
+    banned: false
+    settlements: []
+    gone: false
+    gone_since: null

@@ -1,0 +1,29 @@
+# A股人物名单(P1-P5):A股没有13F,只用"掌舵人"这一类(v5)
+# 条件:创始人仍任CEO或董事长,或连续任CEO满5年;大股东减持有公告,P3 直接可查
+# 名单由你决定、你自己承担;只在季度调仓日改,下一季度生效(P5/D1)
+persons:
+  # ↓↓↓ 示例条目:去掉注释即可用;买不买仍取决于 H2(U2/U3硬筛)+ 论点卡 H3 + 估值 H5 ↓↓↓
+  - id: fang_hongbo
+    name: 方洪波
+    type: helmsman
+    company: SH000333          # 美的集团
+    role_note: 2012年起任董事长兼总裁(连任满5年)
+    verified: false            # 核实任职与减持公告后再置 true
+    crypto_native: false
+    banned: false
+    settlements: []
+    net_sell_12m: 0.0          # 巨潮资讯公告季度手更;>0.20 移出候选
+    gone: false
+    gone_since: null
+
+  # - id: zeng_yuqun
+  #   name: 曾毓群
+  #   type: helmsman
+  #   company: SZ300750        # 宁德时代(创始人董事长,任CEO是否满5年待核实)
+  #   verified: false
+  #   crypto_native: false
+  #   banned: false
+  #   settlements: []
+  #   net_sell_12m: 0.0
+  #   gone: false
+  #   gone_since: null

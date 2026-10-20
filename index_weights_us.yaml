@@ -1,0 +1,13 @@
+# R1 穿透上限用:标普500 ETF前十大权重(近似值,手更)
+# 数据源:基金公司官网/SPDR 每日持仓;季度调仓日核对。
+USVOO:
+  USNVDA: 0.075
+  USMSFT: 0.065
+  USAAPL: 0.063
+  USAMZN: 0.038
+  USTSLA: 0.022
+  USAVGO: 0.026
+  USMETA: 0.025
+  USGOOGL: 0.021
+  USGOOG: 0.017
+  USBRK: 0.016

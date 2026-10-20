@@ -33,8 +33,8 @@ class Context:
     blackout: set = field(default_factory=set)    # G5 财报披露前不买的标的
     name_map: dict = field(default_factory=dict)  # symbol -> 证券简称(G10 ST 检测)
     industry_map: dict = field(default_factory=dict)  # symbol -> 行业(G2 行业上限)
-    month_end: bool = False                       # E2:今日是否月度检查日(月末/R1)
-    rebalance_day: bool = False                   # R1:年度再平衡日(1月首个交易日)
+    month_end: bool = False                       # H5第一步/H8:今日是否月末交易日
+    quarter_day: bool = False                     # C2/H5第二步/H9/P5:季度调仓日
 
     def equity(self) -> float:
         if self.account is not None:
@@ -84,5 +84,6 @@ class Strategy(ABC):
     def manage(self, ctx: Context) -> list[PendingSignal]:
         """卖出信号:G6/G7/G8/G10 等持仓管理。"""
 
-    def on_fill(self, sig: PendingSignal, filled_qty: int, ok: bool) -> None:
+    def on_fill(self, sig: PendingSignal, filled_qty: int, ok: bool,
+                price: float = 0.0) -> None:
         """成交回调:引擎撮合后调用,策略用它推进档位状态机。默认无状态。"""

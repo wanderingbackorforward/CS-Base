@@ -1,0 +1,28 @@
+# 论点卡(H3):第一次买入前写好三样——
+#   1. thesis   一段话:它靠什么赚大钱
+#   2. sell_conditions  2-3条卖出条件,必须能用公开数据判断
+#       auto   系统能判定的机器规则(支持的值):
+#              ocf_4q_negative     近4个季度累计经营现金流转负(美股读 us_pool 财务字段)
+#              profit_4q_negative  近4个季度累计净利润转负
+#              out_of_pool        A股:被移出准入名单(U4 重筛)
+#       manual 系统判定不了的条件:季度调仓日系统推送提醒,你人工核对
+#   3. risks   P2 要求写的监管风险(和解但没认罪的必须写)
+# 没写论点卡 -> 进攻仓不买这只(H3)。只能在季度调仓日改,下一季度生效,旧版本保留(D1)。
+# 下面是特斯拉的格式示例(数据截至2026-10-19),内容你自己写。
+USTSLA:
+  written: "2026-10-20"
+  quarter: "2026Q4"
+  thesis: "示例格式(必须自己重写):靠汽车+储能+Robotaxi赚大钱,能源与服务毛利占比持续提升。"
+  sell_conditions:
+    auto: [ocf_4q_negative]
+    manual:
+      - "汽车交付量连续4个季度同比下降"
+      - "马斯克不再担任CEO(同时触发 P4)"
+  risks: "2018年SEC证券欺诈和解(未认罪,罚2000万美元,卸任董事长);2026年5月推特持股披露迟延和解(罚150万美元,未认罪)"
+
+# USNVDA:
+#   written: ""
+#   quarter: ""
+#   thesis: ""
+#   sell_conditions: {auto: [ocf_4q_negative], manual: []}
+#   risks: ""
