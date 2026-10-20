@@ -14,9 +14,11 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import Optional
 
 from .config import Section
-from .models import Account, Market, Order, OrderStatus, Position, Side, split_symbol
+from .models import (Account, Market, Order, OrderStatus, PendingSignal,
+                     Position, Side, split_symbol)
 from .store import Store
 
 log = logging.getLogger("qtrader.broker")
@@ -143,3 +145,104 @@ class PaperBroker(Broker):
                 p.available_qty = p.qty
                 self.store.save_position(p)
                 log.info("T+1 解锁: %s 可卖 %d", p.symbol, p.available_qty)
+
+
+class ManualBroker:
+    """实盘人工下单通道(live 模式)。
+
+    汇丰没有面向个人的下单 API,所以"下单"先以人工通道落地:
+    - submit(): 信号转人工订单(PENDING 登记),系统发提醒,不动账户/持仓;
+    - 你在券商 App 里真实下单成交;
+    - settle(): 把实际成交价/数量/费用回填,系统按真实资金流记账(账户/持仓/订单)。
+
+    将来券商开放 API 时实现 ApiBroker(submit 直连下单,成交自动回填 settle),
+    引擎/策略层零改动——这就是"先写接口"的含义。
+
+    与 PaperBroker 的分工:PaperBroker 用于 paper 模式自动撮合(模拟盘),
+    ManualBroker 用于 live 模式实盘记账,二者互不替代。
+    """
+
+    def __init__(self, store: Store) -> None:
+        self.store = store
+
+    # ---------- 登记:信号 -> 待人工执行订单(幂等) ----------
+    def submit(self, sig: PendingSignal, qty: int = 0, price: float = 0.0,
+               ts: datetime | None = None) -> Order:
+        o = Order(symbol=sig.symbol, side=Side(sig.side), qty=max(0, int(qty)),
+                  ts=ts or datetime.now(), strategy=sig.strategy,
+                  reason=f"{sig.rule} | {sig.reason}")
+        o.reason = f"{o.reason} | {sig.signal_id}"
+        self.store.save_order(o)
+        self.store.set_meta(f"manual_order:{sig.signal_id}", o.order_id)
+        return o
+
+    def find(self, sig: PendingSignal) -> Optional[Order]:
+        """找回该信号已登记的人工订单(无则 None)。"""
+        oid = self.store.get_meta(f"manual_order:{sig.signal_id}")
+        if not oid:
+            return None
+        for o in self.store.recent_orders(500):
+            if o.order_id == str(oid):
+                return o
+        return None
+
+    # ---------- 结算:按用户回填的真实成交记账 ----------
+    def settle(self, order: Order, price: float, qty: int, fee: float,
+               account: Account, positions: dict[str, Position],
+               t_plus_1: bool) -> Order:
+        """按券商 App 的真实成交回填:现金/持仓/订单就地结算并持久化。
+
+        信任事实:价格/数量/费用以用户所见为准(系统不猜);
+        现金允许记负(先成交后补入金记录的常见时序),记 warning 提醒对账。
+        """
+        if price <= 0 or qty <= 0:
+            order.status = OrderStatus.REJECTED
+            order.reason += " | 回填失败:价格或数量非法"
+            self.store.save_order(order)
+            return order
+
+        if order.side == Side.BUY:
+            amount = price * qty
+            account.cash -= amount + fee
+            if account.cash < 0:
+                log.warning("实盘回填后现金为负(%.2f):真实账户应有未记录的入金,"
+                            "请用 cash 命令/看板入金对账", account.cash)
+            pos = positions.get(order.symbol)
+            if pos is None:
+                pos = Position(symbol=order.symbol, strategy=order.strategy,
+                                opened_at=datetime.now())
+                positions[order.symbol] = pos
+            total_cost = pos.avg_cost * pos.qty + amount + fee
+            pos.qty += qty
+            pos.avg_cost = total_cost / pos.qty
+            pos.high_water = max(pos.high_water, price)
+            if not t_plus_1:                    # 美股 T+0 随买随卖
+                pos.available_qty = pos.qty
+            order.status = OrderStatus.FILLED
+            order.filled_price, order.filled_qty, order.fee = price, qty, fee
+            self.store.save_position(pos)
+        else:
+            pos = positions.get(order.symbol)
+            if pos is None or qty > pos.qty:
+                order.status = OrderStatus.REJECTED
+                order.reason += (f" | 回填失败:卖出{qty}股超过系统持仓"
+                                 f"({pos.qty if pos else 0}股),先核对账户")
+                self.store.save_order(order)
+                return order
+            amount = price * qty
+            account.cash += amount - fee
+            pos.qty -= qty
+            pos.available_qty = max(0, pos.available_qty - qty)
+            order.status = OrderStatus.FILLED
+            order.filled_price, order.filled_qty, order.fee = price, qty, fee
+            if pos.qty <= 0:
+                self.store.drop_position(order.symbol)
+                del positions[order.symbol]
+            else:
+                self.store.save_position(pos)
+
+        self.store.save_account(account)
+        self.store.save_order(order)
+        log.info("实盘成交(人工回填) %s %s x%d @%.4g 费%.2g | %s",
+                 order.side.value, order.symbol, qty, price, fee, order.reason)
+        return order

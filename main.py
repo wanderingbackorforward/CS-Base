@@ -3,7 +3,7 @@
 常用命令(X1 流程:收盘后算信号 -> 次日开盘撮合):
   python main.py serve      # 常驻:A股+美股双引擎 + 看板(:8000,密码登录)
   python main.py once       # A股:立即跑一轮收盘后信号周期
-  python main.py exec       # A股:立即撮合当前待执行信号
+  python main.py exec       # A股:立即撮合当前待执行信号(paper)/转人工订单(live)
   python main.py pool       # A股:P1 硬条件自动筛,产出 data/pool_candidates.csv
   python main.py status     # A股:账户/持仓/待执行信号/档位状态
   python main.py us-once    # 美股:立即跑一轮收盘后信号周期(北京时间06:10同款)
@@ -11,6 +11,12 @@
   python main.py us-status  # 美股:账户/三仓占比/信号/档位状态/汇率
   python main.py reset      # A股:人工复位熔断/冷却
   python main.py us-reset   # 美股:人工复位
+
+live 实盘人工通道(下单在券商App,系统记账):
+  python main.py pending    # 双账户列出待人工执行信号
+  python main.py fill <signal_id> --price 296.3 --qty 9 --fee 18 [--mood 3]
+  python main.py skip <signal_id> --note 理由
+  python main.py cash --market us --delta 5000 --note 入金
 """
 from __future__ import annotations
 
@@ -117,13 +123,98 @@ def cmd_us_status(us: UsEngine) -> None:
                           f"数量{tr.get('qty', 0)}")
 
 
+def cmd_manual(engine, us_engine, args) -> None:
+    """live 人工通道:pending / fill / skip / cash。"""
+    from qtrader import fill as F
+
+    engines = [engine] + ([us_engine] if us_engine else [])
+    names = {id(engine): "A股", id(us_engine): "美股"}
+
+    if args.command == "pending":
+        total = 0
+        for eng in engines:
+            sigs = eng.store.pending_signals()
+            cur = "USD" if eng is us_engine else "CNY"
+            print(f"[{names[id(eng)]} {cur} {eng.mode}模式] 待人工执行信号 {len(sigs)} 条")
+            for s in sigs:
+                oid = eng.store.get_meta(f"manual_order:{s.signal_id}")
+                mark = "已登记订单" if oid else "未登记"
+                print(f"  {s.signal_id}")
+                print(f"    [{s.rule}] {s.side} {s.symbol} "
+                      f"(信号日 {s.signal_date}) {mark}")
+                print(f"    {s.reason[:76]}")
+            total += len(sigs)
+        print(f"共 {total} 条;成交后回填: python main.py fill <signal_id> "
+              f"--price <成交价> --qty <股数> --fee <费用>")
+        return
+
+    if args.command == "fill":
+        if not args.price or not args.qty:
+            print("用法: fill <signal_id> --price 成交价 --qty 股数 [--fee 费用] "
+                  "[--mood 1-5](以券商App成交回报为准)")
+            return
+        eng = F.resolve_engine(engines, args.signal_id)
+        if eng is None:
+            print(f"找不到待执行信号: {args.signal_id}(先跑 pending 查看)")
+            return
+        r = F.fill_signal(eng, args.signal_id, args.price, args.qty,
+                          args.fee or 0.0, args.mood or 0)
+        print(("OK " if r["ok"] else "FAIL ") + r["msg"])
+        return
+
+    if args.command == "skip":
+        eng = F.resolve_engine(engines, args.signal_id)
+        if eng is None:
+            print(f"找不到待执行信号: {args.signal_id}")
+            return
+        r = F.skip_signal(eng, args.signal_id, args.note or "")
+        print(("OK " if r["ok"] else "FAIL ") + r["msg"])
+        return
+
+    if args.command == "cash":
+        if args.market not in ("cn", "us"):
+            print("用法: cash --market cn|us (--delta 金额 | --set 绝对值) "
+                  "[--note 备注];delta>0入金,<0出金")
+            return
+        eng = us_engine if args.market == "us" else engine
+        if eng is None:
+            print("该市场引擎未启用")
+            return
+        if args.delta is None and args.set_to is None:
+            print(f"[{names[id(eng)]}] 当前系统现金 {eng.account.cash:,.2f} "
+                  f"(本金基准 {eng.capital:,.0f})")
+            return
+        r = F.cash_adjust(eng, delta=args.delta or 0.0, set_to=args.set_to,
+                          note=args.note or "")
+        print(("OK " if r["ok"] else "FAIL ") + r["msg"])
+        return
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="QTrader 量化交易系统(A股准则 v2.0 + 美股准则 v1.1)")
     parser.add_argument("command", choices=["serve", "once", "exec", "status",
                                             "reset", "pool",
                                             "us-once", "us-exec", "us-status",
-                                            "us-reset"])
+                                            "us-reset",
+                                            "pending", "fill", "skip", "cash"])
+    parser.add_argument("signal_id", nargs="?", default=None,
+                        help="fill/skip 用:信号ID(pending 可查,支持唯一前缀)")
+    parser.add_argument("--price", type=float, default=None,
+                        help="fill 用:券商App实际成交价")
+    parser.add_argument("--qty", type=int, default=None,
+                        help="fill 用:实际成交股数")
+    parser.add_argument("--fee", type=float, default=0.0,
+                        help="fill 用:券商实际收取的费用(佣金等)")
+    parser.add_argument("--mood", type=int, default=None, choices=[1, 2, 3, 4, 5],
+                        help="fill 用:下单时情绪 1-5(D2 纪律字段)")
+    parser.add_argument("--note", default=None, help="skip/cash 用:备注")
+    parser.add_argument("--market", default=None, choices=["cn", "us"],
+                        help="cash 用:目标账户")
+    parser.add_argument("--delta", type=float, default=None,
+                        help="cash 用:入金(+)出金(-)金额")
+    parser.add_argument("--set", dest="set_to", type=float, default=None,
+                        help="cash 用:直接校准到该绝对现金值")
     parser.add_argument("-c", "--config", default=None)
     args = parser.parse_args()
 
@@ -138,6 +229,10 @@ def main() -> None:
     engine = Engine(cfg)
     us_enabled = bool(cfg["us"].get("enabled", False))
     us_engine = UsEngine(cfg) if us_enabled else None
+
+    if args.command in ("pending", "fill", "skip", "cash"):
+        cmd_manual(engine, us_engine, args)
+        return
 
     if args.command == "serve":
         import threading

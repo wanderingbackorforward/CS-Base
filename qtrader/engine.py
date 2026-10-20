@@ -71,6 +71,10 @@ class Engine:
         self.limit_down_pct = float(b.get("limit_down_pct", -0.098))
 
         self.capital = float(cfg["app"].get("initial_capital", 10000))
+        # paper=纸面自动撮合(模拟盘) / live=实盘人工通道(下单接口,成交回填记账)
+        self.mode = str(cfg["app"].get("mode", "paper")).lower()
+        if self.mode not in ("paper", "live"):
+            self.mode = "paper"
         acc = self.store.load_account()
         if acc is None:
             acc = Account(cash=self.capital, day_start_equity=self.capital,
@@ -371,6 +375,14 @@ class Engine:
             return
         t0 = self.now()
         today = t0.date()
+        if self.mode == "live":
+            # 实盘模式:系统不下单——信号转人工订单发提醒,你在券商App
+            # 下单成交后回填(fill 命令/看板),系统按真实资金流记账。
+            from .fill import submit_manual
+            positions = self.store.all_positions()
+            quote = self._quotes_for(list({s.symbol for s in signals}))
+            submit_manual(self, signals, positions, quote, ts=t0)
+            return
         log.info("========== 开盘撮合 %s:%d 条待执行信号 ==========",
                  today.isoformat(), len(signals))
         positions = self.store.all_positions()

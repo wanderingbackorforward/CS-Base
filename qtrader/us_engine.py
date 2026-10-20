@@ -76,6 +76,10 @@ class UsEngine:
         self.stale_signal_days = int(sch.get("stale_signal_days", 5))
 
         self.capital = float(us.get("initial_capital", 10000))
+        # paper=纸面自动撮合(模拟盘) / live=实盘人工通道(下单接口,成交回填记账)
+        self.mode = str(us.get("mode", "paper")).lower()
+        if self.mode not in ("paper", "live"):
+            self.mode = "paper"
         acc = self.store.load_account()
         if acc is None:
             acc = Account(cash=self.capital, day_start_equity=self.capital,
@@ -284,6 +288,15 @@ class UsEngine:
         if not signals:
             return
         t0 = self.now()
+        if self.mode == "live":
+            # 实盘模式:系统不下单——信号转人工订单发提醒,你在券商App
+            # 下单成交后回填(fill 命令/看板),系统按真实资金流记账。
+            from .fill import submit_manual
+            positions = self.store.all_positions()
+            quote = self._quotes_for(list({s.symbol for s in signals})
+                                     + list(positions))
+            submit_manual(self, signals, positions, quote, ts=self.now())
+            return
         log.info("========== 美股开盘撮合(北京 %s):%d 条待执行 ==========",
                  t0.date(), len(signals))
         positions = self.store.all_positions()

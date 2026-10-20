@@ -42,6 +42,26 @@ class LoginBody(BaseModel):
     password: str
 
 
+class FillBody(BaseModel):
+    signal_id: str
+    price: float
+    qty: int
+    fee: float = 0.0
+    mood: int = 0
+
+
+class SkipBody(BaseModel):
+    signal_id: str
+    note: str = ""
+
+
+class CashBody(BaseModel):
+    market: str = "cn"
+    delta: float = 0.0
+    set_to: Optional[float] = None
+    note: str = ""
+
+
 _PAGE = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -107,6 +127,16 @@ font-size:15px;letter-spacing:2px;outline:none}
 border-radius:8px;background:var(--acc);color:#fff;font-size:15px;cursor:pointer}
 .login-card button:hover{filter:brightness(1.1)}
 #login-err{color:var(--up);font-size:12px;min-height:18px;margin-top:10px}
+.mini{padding:2px 8px;border:1px solid var(--acc);background:transparent;
+color:var(--acc);border-radius:4px;font-size:11px;cursor:pointer;margin-right:4px}
+.mini:hover{background:#16222f}
+.mini.warn{border-color:var(--warn);color:var(--warn)}
+.mfield{margin-top:10px;text-align:left}
+.mfield label{color:var(--dim);font-size:12px;display:block;margin-bottom:4px}
+.mfield input{width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--line);
+background:#0d141c;color:var(--fg);font-size:14px;outline:none;letter-spacing:0}
+.mrow{display:flex;gap:10px;margin-top:14px}
+.mrow button{flex:1;margin:0}
 </style></head><body>
 <div id="login" class="overlay"><div class="login-card">
 <h2>QTRADER 看板</h2><p>A股 + 美股双账户 · 密码登录</p>
@@ -114,8 +144,9 @@ border-radius:8px;background:var(--acc);color:#fff;font-size:15px;cursor:pointer
 <button id="btn-login">进入看板</button>
 <div id="login-err"></div></div></div>
 <div class="wrap">
-<div class="head"><h1>QTRADER<small>A股 / 美股双账户 · 纸面交易看板</small></h1>
-<span class="logout" id="btn-logout">退出登录</span></div>
+<div class="head"><h1>QTRADER<small>A股 / 美股双账户 · 信号 · 下单 · 记账</small></h1>
+<div><span class="logout" id="btn-cash" style="margin-right:8px" onclick="openCash()">入金/出金</span>
+<span class="logout" id="btn-logout">退出登录</span></div></div>
 <div class="tabs">
 <button class="tab active" id="tab-cn" onclick="switchTab('cn')">A股<span class="cur">CNY</span></button>
 <button class="tab" id="tab-us" onclick="switchTab('us')">美股<span class="cur">USD</span></button>
@@ -161,6 +192,12 @@ border-radius:8px;background:var(--acc);color:#fff;font-size:15px;cursor:pointer
 </div>
 
 <div class="toast" id="toast"></div></div>
+<div id="modal" class="overlay"><div class="login-card" style="text-align:left;width:360px">
+<h2 id="modal-title" style="font-size:15px;text-align:center"></h2>
+<div id="modal-body"></div>
+<div class="mrow"><button id="modal-ok">确定</button>
+<button id="modal-cancel" style="background:#1d2a3a">取消</button></div>
+</div></div>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"
  onerror="window.__noecharts=1"></script>
 <script>
@@ -168,6 +205,7 @@ const $=id=>document.getElementById(id);
 let TOKEN=localStorage.getItem('qt_token')||'';
 let mkt='cn';
 const charts={};
+const MODE={cn:'paper',us:'paper'};
 const fmt=(x,d=0)=>x==null||isNaN(x)?'--':Number(x).toLocaleString('zh-CN',
  {minimumFractionDigits:d,maximumFractionDigits:d});
 const cls=x=>x>0?'up':(x<0?'dn':'');
@@ -181,6 +219,58 @@ async function api(path){
  if(r.status===401){showLogin();throw new Error('unauthorized')}
  if(!r.ok)throw new Error('http '+r.status);
  return r.json();
+}
+async function postApi(path,body){
+ const r=await fetch(path,{method:'POST',
+  headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+  body:JSON.stringify(body)});
+ if(r.status===401){showLogin();throw new Error('unauthorized')}
+ if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.msg||d.detail||('http '+r.status))}
+ return r.json();
+}
+let _modalSubmit=null;
+function showModal(title,fields,onOk){
+ $('modal-title').textContent=title;
+ const b=$('modal-body');b.innerHTML='';
+ fields.forEach(f=>{
+  const d=document.createElement('div');d.className='mfield';
+  const l=document.createElement('label');l.textContent=f.label;
+  const i=document.createElement('input');i.type=f.type||'text';
+  if(f.value!=null)i.value=f.value;i.placeholder=f.ph||'';
+  d.appendChild(l);d.appendChild(i);b.appendChild(d);f._el=i;});
+ $('modal').style.display='flex';
+ _modalSubmit=async()=>{
+  const v={};fields.forEach(f=>{v[f.key]=f._el.value.trim()});
+  let ok=true;try{ok=await onOk(v)}catch(e){toast('失败: '+e.message);ok=false}
+  if(ok!==false){$('modal').style.display='none';refresh()}};
+}
+function openFill(sid,sym,side){
+ showModal('回填真实成交 · '+sym+' '+side,[
+  {key:'price',label:'实际成交价(以券商App成交回报为准)',type:'number'},
+  {key:'qty',label:'成交数量(股)',type:'number'},
+  {key:'fee',label:'实际费用(佣金等,可填0)',type:'number',value:'0'},
+  {key:'mood',label:'下单时情绪1-5(D2纪律,可空)',type:'number',ph:'如 3'}],
+  async v=>{
+   if(!v.price||!v.qty){toast('成交价与数量必填');return false}
+   const r=await postApi('/api/fill',{signal_id:sid,price:+v.price,
+    qty:+v.qty,fee:+(v.fee||0),mood:+(v.mood||0)});
+   toast(r.ok?'已入账: '+r.msg:'回填失败: '+r.msg);return r.ok});
+}
+async function doSkip(sid){
+ try{const r=await postApi('/api/skip',{signal_id:sid,note:'看板人工放弃'});
+  toast(r.msg);refresh()}catch(e){toast('失败: '+e.message)}
+}
+function openCash(){
+ const m=mkt;
+ showModal((m==='us'?'美股账户(USD)':'A股账户(CNY)')+' 资金校准',[
+  {key:'delta',label:'入金为正 / 出金为负',type:'number',ph:'如 5000 或 -2000'},
+  {key:'set',label:'或直接校准到该现金绝对值(优先)',type:'number',ph:'券商App可用资金'},
+  {key:'note',label:'备注',type:'text',ph:'如 入金'}],
+  async v=>{
+   if(v.delta===''&&v.set===''){toast('至少填一项');return false}
+   const r=await postApi('/api/cash',{market:m,
+    delta:v.set!==''?0:+(v.delta||0),set_to:v.set!==''?+v.set:null,note:v.note});
+   toast(r.ok?r.msg:'失败: '+r.msg);return r.ok});
 }
 async function doLogin(){
  const pwd=$('pwd').value;$('login-err').textContent='';
@@ -218,15 +308,24 @@ function drawEquity(m,pts){
    areaStyle:{color:'rgba(79,156,249,.12)'}}]});
 }
 function renderSignals(s,m,cur){
- const sg=(s.signals||[]).map(g=>row([[g.signal_date.slice(5),''],
+ const live=MODE[m]==='live';
+ const sg=(s.signals||[]).map(g=>{
+  const ops=live?('<button class="mini" onclick="openFill(\''+g.signal_id+
+   '\',\''+g.symbol+'\',\''+(g.side==='BUY'?'买入':'卖出')+'\')">回填成交</button>'+
+   '<button class="mini warn" onclick="doSkip(\''+g.signal_id+'\')">放弃</button>'):'';
+  return row([[g.signal_date.slice(5),''],
   ['<span class="badge">'+(g.rule||'-')+'</span>',''],
   [g.side==='BUY'?'买入':'卖出',g.side==='BUY'?'up':'dn'],
   [g.symbol,''],
   [g.est_amount?cur+fmt(g.est_amount,0):'--',''],
-  [g.note||(g.reason||'').slice(0,50)||'挂单待撮合',g.note?'warn':'']]));
- return sg.length?'<table><tr><th>信号日</th><th>规则</th><th>方向</th>'+
-  '<th>标的</th><th>预估金额</th><th>备注</th></tr>'+sg.join('')+'</table>':
-  '<div class="empty">无待执行信号(收盘后按规则生成,没有信号就不打扰)</div>';
+  [g.note||(g.reason||'').slice(0,50)||(live?'等你在券商App下单后回填':'挂单待撮合'),
+   g.note?'warn':''],
+  [ops,'']])});
+ const banner=live?'<div class="hint" style="color:var(--warn)">实盘模式:去券商App按信号下单,成交后点「回填成交」录入实际价/量/费,系统按真实资金流记账</div>':'';
+ return banner+(sg.length?'<table><tr><th>信号日</th><th>规则</th><th>方向</th>'+
+  '<th>标的</th><th>预估金额</th><th>备注</th>'+(live?'<th>操作</th>':'')+'</tr>'+
+  sg.join('')+'</table>':
+  '<div class="empty">无待执行信号(收盘后按规则生成,没有信号就不打扰)</div>');
 }
 function renderTranches(s){
  const tr=(s.tranches||[]).map(t=>row([[t.symbol,''],
@@ -260,7 +359,8 @@ function renderCN(s){
  const p=s.total_pnl;
  $('pnl-cn').textContent=(p>0?'+':'')+'¥'+fmt(p,0)+' ('+fmt(p/s.equity*100,1)+'%)';
  $('pnl-cn').className='v '+cls(p);
- $('status-cn').textContent=s.killed?'已熔断(人工复位)':(s.cooldown?'冷却中':'运行中');
+ $('status-cn').textContent=(MODE.cn==='live'?'实盘·人工下单 · ':'')+
+  (s.killed?'已熔断(人工复位)':(s.cooldown?'冷却中':'运行中'));
  $('status-cn').style.color=s.killed?'var(--up)':(s.cooldown?'var(--warn)':'var(--dn)');
  const pos=(s.positions||[]).map(p=>row([[p.symbol,''],
   ['<span class="badge">'+p.strategy+'</span>',''],
@@ -288,7 +388,8 @@ function renderUS(s){
  const p=s.total_pnl;
  $('pnl-us').textContent=(p>0?'+':'')+'$'+fmt(p,0)+' ('+fmt(p/s.equity*100,1)+'%)';
  $('pnl-us').className='v '+cls(p);
- $('session-us').textContent=s.session||'未生成(等06:10信号周期)';
+ $('session-us').textContent=(MODE.us==='live'?'实盘·人工下单 · ':'')+
+  (s.session||'未生成(等06:10信号周期)');
  const a=s.alloc||{};
  $('seg-core').style.width=((a.core_pct||0)*100).toFixed(1)+'%';
  $('seg-sat').style.width=((a.sat_pct||0)*100).toFixed(1)+'%';
@@ -332,6 +433,7 @@ async function refresh(){
   const [cn,us,cnEq,usEq]=await Promise.all([
    api('/api/state?market=cn'),api('/api/state?market=us'),
    api('/api/equity?market=cn'),api('/api/equity?market=us')]);
+  MODE.cn=cn.mode||'paper';MODE.us=us.mode||'paper';
   renderCN(cn);drawEquity('cn',cnEq||[]);
   renderUS(us);drawEquity('us',usEq||[]);
  }catch(e){if(e.message!=='unauthorized')toast('刷新失败: '+e.message)}
@@ -339,6 +441,8 @@ async function refresh(){
 function boot(){refresh();setInterval(refresh,30000)}
 $('btn-login').onclick=doLogin;
 $('btn-logout').onclick=doLogout;
+$('modal-ok').onclick=()=>{if(_modalSubmit)_modalSubmit()};
+$('modal-cancel').onclick=()=>{$('modal').style.display='none'};
 $('pwd').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
 window.addEventListener('resize',()=>Object.values(charts).forEach(c=>c&&c.resize()));
 if(TOKEN){boot()}else{showLogin()}
@@ -529,6 +633,7 @@ def create_app(engine: Engine, us_engine: Optional[UsEngine] = None) -> FastAPI:
             })
         return {
             "currency": "CNY",
+            "mode": engine.mode,
             "equity": round(equity, 0), "cash": round(acc.cash, 0) if acc else 0,
             "market_value": round(mv, 0), "day_pnl": round(day_pnl, 0),
             "total_pnl": round(equity - engine.capital, 0),
@@ -588,6 +693,7 @@ def create_app(engine: Engine, us_engine: Optional[UsEngine] = None) -> FastAPI:
             fx = None
         return {
             "currency": "USD",
+            "mode": us.mode,
             "equity": round(equity, 0), "cash": round(acc.cash, 0),
             "market_value": round(mv, 0), "day_pnl": round(day_pnl, 0),
             "total_pnl": round(equity - us.capital, 0),
@@ -635,5 +741,59 @@ def create_app(engine: Engine, us_engine: Optional[UsEngine] = None) -> FastAPI:
         else:
             engine.reset()
         return {"ok": True}
+
+    # ---------------- live 人工通道:回填/放弃/资金校准 ----------------
+    def _engine_of_signal(signal_id: str):
+        from qtrader import fill as F
+        engines = [e for e in (engine, us_engine) if e is not None]
+        return F.resolve_engine(engines, signal_id)
+
+    @app.post("/api/fill")
+    def api_fill(body: FillBody, request: Request):
+        denied = _guard(request)
+        if denied:
+            return denied
+        from qtrader import fill as F
+        eng = _engine_of_signal(body.signal_id)
+        if eng is None:
+            return JSONResponse({"ok": False, "msg": "找不到待执行信号"},
+                                status_code=404)
+        if eng.mode != "live":
+            return JSONResponse(
+                {"ok": False, "msg": f"{eng.mode} 模式为系统自动撮合,"
+                                     f"无需人工回填(config.yaml 切 live 后可用)"},
+                status_code=400)
+        r = F.fill_signal(eng, body.signal_id, body.price, body.qty,
+                          body.fee, body.mood)
+        return JSONResponse(r)
+
+    @app.post("/api/skip")
+    def api_skip(body: SkipBody, request: Request):
+        denied = _guard(request)
+        if denied:
+            return denied
+        from qtrader import fill as F
+        eng = _engine_of_signal(body.signal_id)
+        if eng is None:
+            return JSONResponse({"ok": False, "msg": "找不到待执行信号"},
+                                status_code=404)
+        if eng.mode != "live":
+            return JSONResponse(
+                {"ok": False, "msg": f"{eng.mode} 模式不支持人工放弃,信号按规则自动处理"},
+                status_code=400)
+        return JSONResponse(F.skip_signal(eng, body.signal_id, body.note))
+
+    @app.post("/api/cash")
+    def api_cash(body: CashBody, request: Request):
+        denied = _guard(request)
+        if denied:
+            return denied
+        from qtrader import fill as F
+        eng = us_engine if body.market == "us" else engine
+        if eng is None:
+            return JSONResponse({"ok": False, "msg": "该市场引擎未启用"},
+                                status_code=404)
+        return JSONResponse(F.cash_adjust(eng, delta=body.delta,
+                                          set_to=body.set_to, note=body.note))
 
     return app

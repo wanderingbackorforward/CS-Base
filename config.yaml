@@ -6,7 +6,7 @@
 
 app:
   name: qtrader
-  mode: paper            # paper=纸面模拟撮合(默认,即准则"先跑3个月模拟盘") | live=实盘(需券商适配器,当前预留)
+  mode: live             # paper=纸面模拟撮合(准则"先跑3个月模拟盘") | live=实盘人工通道(信号->你在券商App下单->回填真实成交记账)
   initial_capital: 10000 # 对齐真实本金一万块
   state_dir: ./data      # 状态目录(SQLite/缓存/日志),迁移服务器时拷走这个目录即可
   log_level: INFO
@@ -178,6 +178,7 @@ server:
 us:
   enabled: true
   state_dir: ./data_us        # 美股独立状态目录(与A股 ./data 完全分开,迁移拷走即可)
+  mode: live                  # paper=纸面自动撮合 | live=实盘人工通道(信号->你在券商App下单->回填真实成交记账)
   initial_capital: 10000      # USD(美元本金,改这里)
   core:                        # 核心仓 C1-C9(纳指100 ETF)
     symbol: USQQQM            # QQQM 或 QQQ 二选一,不来回换
