@@ -100,16 +100,16 @@ class RiskManager:
         notes: list[str] = []
         equity = account.equity(market_value)
         account.peak_equity = max(account.peak_equity, equity)
-        # 单日亏损冷却
-        if account.day_start_equity > 0:
+        # 单日亏损冷却(阈值 >= 0 视为禁用:美股准则大跌恰是买点,不能因单日亏损禁买)
+        if account.day_start_equity > 0 and self.daily_loss_limit < 0:
             day_pnl = equity / account.day_start_equity - 1
             if day_pnl <= self.daily_loss_limit:
                 until = ((asof or date.today())
                          + timedelta(days=self.cooldown_days)).isoformat()
                 self.store.set_meta("cooldown_until", until)
                 notes.append(f"单日亏损 {day_pnl:.1%},冷却至 {until} 禁止开新仓")
-        # 回撤熔断
-        if account.peak_equity > 0:
+        # 回撤熔断(阈值 >= 0 视为禁用)
+        if account.peak_equity > 0 and self.kill_drawdown < 0:
             dd = equity / account.peak_equity - 1
             if dd <= self.kill_drawdown and not account.killed:
                 account.killed = True

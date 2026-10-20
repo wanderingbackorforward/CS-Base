@@ -1,7 +1,8 @@
-"""纸面撮合 broker:按 A股/港股真实规则模拟成交与费用。
+"""纸面撮合 broker:按 A股/港股/美股真实规则模拟成交与费用。
 
 A股:佣金万2.5(最低5元)+ 印花税0.05%(卖出)+ 过户费0.001%(双边)+ T+1 + 100股整手;
 港股(纸面):佣金同上 + 印花税0.1%(双边,取保守值)+ T+0 + 按整手简化为100股;
+美股(纸面):无印花/过户费;佣金 max(交易额*费率, 每单最低18美元,汇丰标准) + T+0 + 零股可交易;
 滑点:成交价 = 参考价 * (1 ± slippage),买入上浮、卖出下打——纸面必须按"对我不利"的方向模拟,
 这是无数纸面回测虚高的根源,我们不自己骗自己。
 
@@ -52,6 +53,9 @@ class PaperBroker(Broker):
     # ---------- 费用 ----------
     def fee(self, market: Market, side: Side, amount: float,
             symbol: str = "") -> float:
+        if market == Market.US:
+            # 美股:无印花税/过户费;佣金按汇丰模型 max(交易额*费率, 每单最低)
+            return max(amount * self.commission_rate, self.commission_min)
         commission = max(amount * self.commission_rate, self.commission_min)
         fee = commission
         if market == Market.HK:
@@ -73,7 +77,7 @@ class PaperBroker(Broker):
             order.reason = (order.reason + " | 拒单:价格无效或数量非法").strip(" |")
             self.store.save_order(order)
             return order
-        if market != Market.HK and order.qty % self.lot != 0:
+        if market not in (Market.HK, Market.US) and order.qty % self.lot != 0:
             order.status = OrderStatus.REJECTED
             order.reason += " | 拒单:A股须整手(100股)"
             self.store.save_order(order)

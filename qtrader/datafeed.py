@@ -219,6 +219,19 @@ class DataFeed:
     def _fetch_hist(self, symbol: str, start: str, end: str) -> Optional[pd.DataFrame]:
         mkt, code = split_symbol(symbol)
         s, e = start.replace("-", ""), end.replace("-", "")
+        if mkt == Market.US:
+            # 新浪美股日线:返回 date/open/high/low/close/volume 全量历史
+            raw = self._try("sina.us_hist", ak.stock_us_daily, symbol=code,
+                            adjust="qfq")
+            if raw is None:
+                return None
+            df = raw.rename(columns={"date": "dt"})
+            for c in ("volume", "amount"):
+                if c not in df.columns:
+                    df[c] = 0.0
+            df["dt"] = pd.to_datetime(df["dt"])
+            return self._clean_hist(df)
+
         if mkt == Market.HK:
             raw = self._try("sina.hk_hist", ak.stock_hk_daily, symbol=code)
             if raw is None:
@@ -509,3 +522,27 @@ class DataFeed:
         if not cal:
             return d.weekday() < 5
         return d in cal
+
+    # ---------------- 美元兑人民币中间价(美股准则:按人民币记盈亏,报税用) ----------------
+    def usd_cny(self) -> Optional[float]:
+        """返回 USD/CNY 汇率(约值,报税参考);拿不到返回 None,绝不阻塞交易流程。
+        缓存 24 小时——汇率一天变不了几次,少打一次接口少一分被墙的风险。"""
+        pkl = self.cache_dir / "usd_cny.pkl"
+        now = time.time()
+        if pkl.exists() and now - pkl.stat().st_mtime < 86400:
+            try:
+                return pickle.loads(pkl.read_bytes())
+            except Exception:  # noqa: BLE001 缓存损坏则重拉
+                pass
+        raw = self._try("sina.fx_spot", ak.fx_spot_quote)
+        rate = None
+        if raw is not None:
+            try:
+                rows = raw[raw["货币对"].astype(str).str.upper() == "USD/CNY"]
+                if len(rows):
+                    rate = float(pd.to_numeric(rows.iloc[0]["买报价"], errors="coerce"))
+            except Exception as e:  # noqa: BLE001
+                log.warning("USD/CNY 解析失败: %s", e)
+        if rate:
+            pkl.write_bytes(pickle.dumps(rate))
+        return rate

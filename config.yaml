@@ -23,7 +23,7 @@ market:
     enabled: true
     watch: ["00700", "09988", "03690", "01810"]   # 观察池(段永平系"老登股",只看不交易)
   us:
-    enabled: false          # 预留
+    enabled: true           # 美股板块(美股投资准则 v1.1,独立账户/美元计价)
 
 data:
   request_interval_sec: 0.35
@@ -168,6 +168,65 @@ schedule:
 server:
   host: 0.0.0.0
   port: 8000
+  password: "y318760nj"      # 看板登录密码(美股准则:系统只算信号/发提醒/记日志,下单人工确认)
+
+# ============================================================
+# 美股板块(美股投资准则 v1.1)——独立账户/美元计价/与A股账户分开管理
+# 调度为北京时间:美股收盘约 04:00-05:00(北京) -> 06:10 算信号;
+# 美股开盘约 21:30-22:30(北京) -> 22:40 开盘价撮合(X1 美股版)
+# ============================================================
+us:
+  enabled: true
+  state_dir: ./data_us        # 美股独立状态目录(与A股 ./data 完全分开,迁移拷走即可)
+  initial_capital: 10000      # USD(美元本金,改这里)
+  core:                        # 核心仓 C1-C9(纳指100 ETF)
+    symbol: USQQQM            # QQQM 或 QQQ 二选一,不来回换
+    total_pct: 0.70           # 占美股总资金 70%
+    parts: 5                  # 核心仓分 5 份
+    base_parts: 2             # C4 底仓 = 2/5 = 28%(长期持有,R1 才调整)
+    high_window: 252          # C2 前高 = 最近252个交易日最高收盘价
+    tranches:                 # C5 加仓档位(各 1 份 = 14%)
+      - {key: A, dd: -0.10}   # 涨回前高约赚 11%
+      - {key: B, dd: -0.20}   # 约 25%
+      - {key: C, dd: -0.30}   # 约 43%
+  satellite:                   # 卫星仓 S1-S13(个股,最多3只)
+    pool_file: ./us_pool.yaml # 理由卡必填(S7),人工维护
+    total_pct: 0.20           # R4 卫星仓合计 <= 20%
+    max_stocks: 3
+    high_window: 252          # S6 前高 = 252个交易日最高收盘
+    tranches:                 # S6 档位(个股波动大,比核心仓拉得宽)
+      - {key: A, dd: -0.15}   # 涨回前高约赚 18%
+      - {key: B, dd: -0.30}   # 约 43%
+      - {key: C, dd: -0.45}   # 约 82%
+    per_stock_pct: 0.10       # R2 单只上限 10%(每份 = 10%/3)
+    trim_trigger: 0.15        # R2 涨超 15% -> 减回 10%
+    industry_cap: 0.15        # R3 同行业合计 <= 15%
+    max_dd_5y: 0.70           # S5 过去5年最大回撤 <= 70%
+    earnings_gap_days: 3      # S7 财报公布前3个交易日不买(读 next_earnings 字段)
+    sell_back_ratio: 0.667    # S9 涨回前高卖出该份的 2/3
+    trailing_normal: 0.25     # S10 移动止盈:普通股回落 25%
+    trailing_high: 0.30       # S10 高波动个股回落 30%(vol_class: high)
+    deep_dd_review: 0.60     # S13 回撤超 60%:停止加仓,强制复核
+  cash:                        # 现金池 + 停泊仓 C9/R5
+    symbol: USSGOV            # 短期国债ETF(SGOV/BIL):闲置份额与现金池都停泊于此
+    total_pct: 0.10
+    cash_floor: 0.05          # R5 现金池低于 5% -> 卖出回款优先补足
+    sweep_buffer: 0.02        # 现金缓冲:超过 2% 的现金自动扫入 SGOV 计息
+  schedule:
+    tick_seconds: 30
+    signal_time: "06:10"      # 北京时间,美股收盘后算信号(C1 只用收盘价)
+    execute_time: "22:40"     # 北京时间,美股开盘后按开盘价撮合(冬令时开盘22:30)
+    stale_signal_days: 5      # 信号挂起超过5个交易日作废重评
+  broker:                     # 汇丰美股费用(纸面如实模拟,美元)
+    commission_rate: 0.0001    # 交易荟 0.01%
+    commission_min: 18.0      # 标准佣金每单最低 18 美元(首1000股)
+    slippage: 0.001           # 滑点对我不利方向,不自己骗自己
+  risk:                        # 准则的仓位上限在策略层(C5/R2/R3/R4);这里只留最终安全网
+    max_position_pct: 1.0     # 不启用单票上限(QQQM 底仓合法占比 28%)
+    max_total_exposure: 1.05  # 不启用总仓位上限(现金停泊 SGOV 后总市值可达 ~98%)
+    max_drawdown_kill: 0      # 0 = 禁用熔断(C5 要求大跌加仓,与熔断语义冲突)
+    daily_loss_limit_pct: 0   # 0 = 禁用单日冷却(纳指单日 -3% 常见,不能禁买)
+  rebalance_drift: 0.05       # R1 偏离超过5个百分点才调回
 
 backtest:
   start: "2024-06-01"

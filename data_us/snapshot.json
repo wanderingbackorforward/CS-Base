@@ -1,0 +1,124 @@
+{
+  "exported_at": "2026-10-20 09:40:35",
+  "account": {
+    "cash": 44.91082000000097,
+    "day_start_equity": 10000.0,
+    "peak_equity": 10000.0,
+    "killed": false
+  },
+  "positions": [
+    {
+      "symbol": "USQQQM",
+      "qty": 9,
+      "available_qty": 9,
+      "avg_cost": 298.5963,
+      "stop_price": 0.0,
+      "opened_at": "2026-10-20 09:40:35",
+      "days_held": 0,
+      "strategy": "us_core",
+      "high_water": 296.5963,
+      "meta": {}
+    },
+    {
+      "symbol": "USSGOV",
+      "qty": 72,
+      "available_qty": 72,
+      "avg_cost": 100.94058999999999,
+      "stop_price": 0.0,
+      "opened_at": "2026-10-20 09:40:35",
+      "days_held": 0,
+      "strategy": "us_core",
+      "high_water": 100.69058999999999,
+      "meta": {}
+    }
+  ],
+  "orders_recent": [
+    {
+      "symbol": "USSGOV",
+      "side": "BUY",
+      "qty": 72,
+      "ts": "2026-10-20 17:40:35",
+      "strategy": "us_core",
+      "reason": "C9 | C9 待命资金停泊:现金100.0% 超过缓冲2%,扫入短期国债ETF计息",
+      "size_hint_pct": 0.0,
+      "order_id": "O2610200940352",
+      "status": "FILLED",
+      "filled_price": 100.69058999999999,
+      "filled_qty": 72,
+      "fee": 18.0
+    },
+    {
+      "symbol": "USQQQM",
+      "side": "BUY",
+      "qty": 9,
+      "ts": "2026-10-20 17:40:35",
+      "strategy": "us_core",
+      "reason": "C4 | C4 启动底仓:核心仓70%的2/5=28%,一次买完",
+      "size_hint_pct": 0.0,
+      "order_id": "O2610200940351",
+      "status": "FILLED",
+      "filled_price": 296.5963,
+      "filled_qty": 9,
+      "fee": 18.0
+    }
+  ],
+  "signals_recent": [
+    {
+      "symbol": "USSGOV",
+      "side": "BUY",
+      "signal_date": "2026-10-19",
+      "strategy": "us_core",
+      "rule": "C9",
+      "reason": "C9 待命资金停泊:现金100.0% 超过缓冲2%,扫入短期国债ETF计息",
+      "size_hint_pct": 0.98,
+      "sell_ratio": 1.0,
+      "qty": 0,
+      "tranche": "",
+      "trigger_high": 0.0,
+      "signal_id": "S20261019-USSGOV-BUY-C9",
+      "status": "EXECUTED",
+      "executed_date": "2026-10-20",
+      "filled_price": 0.0,
+      "filled_qty": 0,
+      "note": "开盘价100.59成交72股"
+    },
+    {
+      "symbol": "USQQQM",
+      "side": "BUY",
+      "signal_date": "2026-10-19",
+      "strategy": "us_core",
+      "rule": "C4",
+      "reason": "C4 启动底仓:核心仓70%的2/5=28%,一次买完",
+      "size_hint_pct": 0.28,
+      "sell_ratio": 1.0,
+      "qty": 0,
+      "tranche": "",
+      "trigger_high": 0.0,
+      "signal_id": "S20261019-USQQQM-BUY-C4",
+      "status": "EXECUTED",
+      "executed_date": "2026-10-20",
+      "filled_price": 0.0,
+      "filled_qty": 0,
+      "note": "开盘价296.30成交9股"
+    },
+    {
+      "symbol": "USAMD",
+      "side": "BUY",
+      "signal_date": "2026-10-19",
+      "strategy": "us_satellite",
+      "rule": "S6-A",
+      "reason": "S6-A档:自252日前高649.42回撤-17.1%(触发线-15%),理由卡成立,买1份(3.3%)",
+      "size_hint_pct": 0.0333,
+      "sell_ratio": 1.0,
+      "qty": 0,
+      "tranche": "A",
+      "trigger_high": 649.42,
+      "signal_id": "S20261019-USAMD-BUY-S6-A",
+      "status": "FAILED",
+      "executed_date": "2026-10-20",
+      "filled_price": 0.0,
+      "filled_qty": 0,
+      "note": "每份预算333USD不足1股(股价551.78);追加本金或按D1调整参数"
+    }
+  ]
+}

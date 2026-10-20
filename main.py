@@ -1,12 +1,16 @@
-"""QTrader CLI 入口。
+"""QTrader CLI 入口(A股准则 v2.0 + 美股准则 v1.1 双引擎)。
 
-常用命令(准则 v2.0 X1 流程):
-  python main.py serve     # 常驻运行:收盘后算信号 + 次日开盘撮合 + 看板(:8000)
-  python main.py once      # 立即跑一轮收盘后信号周期(验证/手动补跑)
-  python main.py exec      # 立即撮合当前待执行信号(模拟盘验证/手动补跑)
-  python main.py pool      # 跑 P1 硬条件自动筛,产出 data/pool_candidates.csv
-  python main.py status    # 查看账户/持仓/待执行信号/档位状态
-  python main.py reset     # 人工复位熔断/冷却
+常用命令(X1 流程:收盘后算信号 -> 次日开盘撮合):
+  python main.py serve      # 常驻:A股+美股双引擎 + 看板(:8000,密码登录)
+  python main.py once       # A股:立即跑一轮收盘后信号周期
+  python main.py exec       # A股:立即撮合当前待执行信号
+  python main.py pool       # A股:P1 硬条件自动筛,产出 data/pool_candidates.csv
+  python main.py status     # A股:账户/持仓/待执行信号/档位状态
+  python main.py us-once    # 美股:立即跑一轮收盘后信号周期(北京时间06:10同款)
+  python main.py us-exec    # 美股:立即撮合待执行信号(开盘价撮合)
+  python main.py us-status  # 美股:账户/三仓占比/信号/档位状态/汇率
+  python main.py reset      # A股:人工复位熔断/冷却
+  python main.py us-reset   # 美股:人工复位
 """
 from __future__ import annotations
 
@@ -14,10 +18,12 @@ import argparse
 import logging
 import logging.handlers
 import sys
+import time
 from pathlib import Path
 
 from qtrader.config import load_config
 from qtrader.engine import Engine
+from qtrader.us_engine import UsEngine
 
 
 def setup_logging(state_dir: Path, level: str = "INFO") -> None:
@@ -59,10 +65,65 @@ def cmd_pool(cfg) -> None:
         print("P1 未产出候选(数据源不可用?),检查日志后重试")
 
 
+def cmd_us_status(us: UsEngine) -> None:
+    acc = us.account
+    store = us.store
+    positions = store.all_positions()
+    alloc = us.allocation()
+    quote = us._quotes_for(list(positions))
+    mv = us._market_value(positions, quote=quote)
+    eq = acc.equity(mv)
+    fx = us.usd_cny()
+    print(f"[美股账户 USD] 净值 {eq:,.0f} | 现金 {acc.cash:,.0f} | 市值 {mv:,.0f}"
+          f" | 总盈亏 {eq - us.capital:+,.0f}")
+    print(f"三仓占比(R1/R4/R5):核心 {alloc['core_pct']:.0%} / "
+          f"卫星 {alloc['sat_pct']:.0%} / 现金池 {alloc['cash_pct']:.0%}"
+          f"(目标 70%/20%/10%)")
+    if fx:
+        print(f"报税参考:USD/CNY ≈ {fx:.3f},净值折人民币约 {eq * fx:,.0f} 元"
+              f"(境外所得次年3.1-6.30自行申报,盈亏同年内可互抵)")
+    else:
+        print("USD/CNY 汇率暂不可用(报税参考,不影响交易)")
+    if positions:
+        print(f"持仓 {len(positions)} 只:")
+        for s, p in positions.items():
+            print(f"  {s} [{p.strategy}] x{p.qty} @ {p.avg_cost:.2f} USD")
+    else:
+        print("持仓 0 只(启动后 C4 会先买 QQQM 底仓,C9 把闲置现金停泊 SGOV)")
+    signals = store.pending_signals()
+    print(f"待执行信号 {len(signals)} 条:")
+    for s in signals:
+        print(f"  [{s.rule}] {s.side} {s.symbol} (信号日 {s.signal_date}) "
+              f"{s.reason[:70]}")
+    states = store.all_pool_states()
+    active = {k: v for k, v in states.items()
+              if any(t.get("state") not in ("available",)
+                     for t in (v.get("tranches") or {}).values())
+              or v.get("needs_review")
+              or (v.get("base") or {}).get("deployed")}
+    if active:
+        print("档位状态(底仓/非空闲/待复核):")
+        for sym, st in active.items():
+            if st.get("needs_review"):
+                print(f"  {sym}: 需人工复核 -> {st.get('review_note', '')}")
+                continue
+            base = st.get("base") or {}
+            if base.get("deployed"):
+                print(f"  {sym} 底仓: {base.get('qty', 0)} 股已部署(C4)")
+            for k, tr in st.get("tranches", {}).items():
+                if tr.get("state") != "available":
+                    print(f"  {sym} {k}档: {tr['state']} "
+                          f"触发前高{tr.get('trigger_high', 0):.2f} "
+                          f"数量{tr.get('qty', 0)}")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="QTrader 量化交易系统(A股准则 v2.0)")
+    parser = argparse.ArgumentParser(
+        description="QTrader 量化交易系统(A股准则 v2.0 + 美股准则 v1.1)")
     parser.add_argument("command", choices=["serve", "once", "exec", "status",
-                                            "reset", "pool"])
+                                            "reset", "pool",
+                                            "us-once", "us-exec", "us-status",
+                                            "us-reset"])
     parser.add_argument("-c", "--config", default=None)
     args = parser.parse_args()
 
@@ -75,13 +136,15 @@ def main() -> None:
         return
 
     engine = Engine(cfg)
+    us_enabled = bool(cfg["us"].get("enabled", False))
+    us_engine = UsEngine(cfg) if us_enabled else None
 
     if args.command == "serve":
         import threading
         import uvicorn
         from qtrader.dashboard import create_app
 
-        app = create_app(engine)
+        app = create_app(engine, us_engine)
         host = cfg["server"].get("host", "0.0.0.0")
         port = int(cfg["server"].get("port", 8000))
         t = threading.Thread(
@@ -89,14 +152,37 @@ def main() -> None:
                                        log_level="warning"),
             daemon=True)
         t.start()
-        print(f"看板已启动: http://<服务器IP>:{port}")
-        engine.serve_forever()
+        print(f"看板已启动: http://<服务器IP>:{port} (登录密码见 config.yaml server.password)")
+        engines = [engine] + ([us_engine] if us_engine else [])
+        print("双引擎常驻运行(A股 15:10信号/09:25撮合;美股 06:10信号/22:40撮合,北京时间)")
+        tick = min(int(e.tick_seconds if hasattr(e, "tick_seconds") else 30)
+                   for e in engines)
+        while True:
+            for e in engines:
+                try:
+                    e.tick()
+                except Exception:  # noqa: BLE001
+                    logging.getLogger("qtrader.main").exception(
+                        "%s tick 异常(已吞掉)", type(e).__name__)
+            time.sleep(tick)
     elif args.command == "once":
         engine.run_once()
     elif args.command == "exec":
         engine.run_execute()
     elif args.command == "reset":
         engine.reset()
+    elif args.command == "us-once":
+        if us_engine:
+            us_engine.run_once()
+    elif args.command == "us-exec":
+        if us_engine:
+            us_engine.run_execute()
+    elif args.command == "us-reset":
+        if us_engine:
+            us_engine.reset()
+    elif args.command == "us-status":
+        if us_engine:
+            cmd_us_status(us_engine)
     elif args.command == "status":
         acc = engine.account
         store = engine.store
